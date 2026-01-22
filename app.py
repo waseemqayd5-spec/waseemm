@@ -945,6 +945,7 @@ def settings():
     </html>
     '''
 
+        
 
 if __name__ == '__main__':
     print("=" * 60)
@@ -952,16 +953,15 @@ if __name__ == '__main__':
     print("=" * 60)
     print("📁 قاعدة البيانات: data/supermarket.db")
     print("🌐 التطبيق يعمل على:")
-    print("   👉 http://localhost:5000      - للعملاء")
-    print("   👉 http://localhost:5000/admin - للإدارة")
+    print("   👉 http://localhost:10000      - للعملاء")
+    print("   👉 http://localhost:10000/admin - للإدارة")
     print("=" * 60)
-    print("⏳ جاري التشغيل...")
 
-    # إنشاء مجلد data إذا لم يكن موجوداً
     if not os.path.exists('data'):
         os.makedirs('data')
         print("✅ تم إنشاء مجلد data")
 
-app.run(host="0.0.0.0", port=10000)
+    app.run(host="0.0.0.0", port=10000)
     
     
+
