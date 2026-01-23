@@ -20,7 +20,9 @@ def home():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>سوبر ماركت - نظام الولاء</title>
+        <title>سوبر ماركت اولاد قايد محمد </title>
+        <title>للتجاره العامه</title>
+        
         <style>
             * {
                 margin: 0;
@@ -964,4 +966,5 @@ if __name__ == '__main__':
     app.run(host="0.0.0.0", port=10000)
     
     
+
 
