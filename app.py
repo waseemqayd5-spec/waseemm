@@ -92,3 +92,4 @@ BASE_HTML = """
         <td>{{ c.name }}</td>
         <td>{{ c.phone }}</td>
         <td>{{ c.points }}</td>
+
