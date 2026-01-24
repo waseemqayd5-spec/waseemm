@@ -75,10 +75,106 @@ def get_offers_for_customer(tier, points):
 
 
 # =========================
-# واجهة إضافة عرض
+# صفحة عرض العروض
 # =========================
 @app.route('/admin/offers')
-def admin_offers():
+def admin_offers_list():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id, title, description, code, min_points, tier, is_active FROM offers")
+    offers = c.fetchall()
+    conn.close()
+
+    # تحويل العروض إلى HTML
+    rows_html = ""
+    for offer in offers:
+        rows_html += f"""
+        <tr>
+            <td>{offer[0]}</td>
+            <td>{offer[1]}</td>
+            <td>{offer[2]}</td>
+            <td>{offer[3]}</td>
+            <td>{offer[4]}</td>
+            <td>{offer[5]}</td>
+            <td>{'نشط' if offer[6] == 1 else 'معطل'}</td>
+            <td>
+                <button onclick="deleteOffer({offer[0]})">🗑️ حذف</button>
+            </td>
+        </tr>
+        """
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>العروض الموجودة</title>
+        <style>
+            body {{ font-family: Arial; background: #f4f6f8; padding: 30px; }}
+            .box {{ background: white; padding: 25px; border-radius: 10px; max-width: 1000px; margin: auto; }}
+            table {{ width: 100%; border-collapse: collapse; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; text-align: center; }}
+            th {{ background: #f2f2f2; }}
+            button {{
+                padding: 8px 12px;
+                border-radius: 6px;
+                border: 1px solid #ccc;
+                cursor: pointer;
+            }}
+            button:hover {{ opacity: 0.8; }}
+            .add-btn {{
+                background: #27ae60; color: white;
+                margin-bottom: 15px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>📦 العروض الموجودة</h2>
+
+            <button class="add-btn" onclick="window.location.href='/admin/offers/add'">
+                ➕ إضافة عرض جديد
+            </button>
+
+            <table>
+                <tr>
+                    <th>رقم</th>
+                    <th>العنوان</th>
+                    <th>الوصف</th>
+                    <th>الكود</th>
+                    <th>أقل نقاط</th>
+                    <th>الدرجة</th>
+                    <th>الحالة</th>
+                    <th>إجراءات</th>
+                </tr>
+                {rows_html}
+            </table>
+        </div>
+
+        <script>
+            function deleteOffer(id) {{
+                fetch("/api/delete_offer", {{
+                    method: "POST",
+                    headers: {{ "Content-Type": "application/json" }},
+                    body: JSON.stringify({{ id: id }})
+                }})
+                .then(r => r.json())
+                .then(d => {{
+                    alert(d.message);
+                    if (d.success) window.location.reload();
+                }});
+            }}
+        </script>
+    </body>
+    </html>
+    """
+
+
+# =========================
+# صفحة إضافة عرض
+# =========================
+@app.route('/admin/offers/add')
+def admin_offers_add():
     return """
     <!DOCTYPE html>
     <html lang="ar" dir="rtl">
@@ -134,6 +230,7 @@ def admin_offers():
                 .then(d => {
                     msg.innerText = d.message;
                     msg.style.color = d.success ? "green" : "red";
+                    if (d.success) window.location.href = "/admin/offers";
                 });
             }
         </script>
@@ -170,6 +267,27 @@ def add_offer():
     conn.close()
 
     return jsonify(success=True, message="✅ تم إضافة العرض بنجاح")
+
+
+# =========================
+# API حذف عرض
+# =========================
+@app.route("/api/delete_offer", methods=["POST"])
+def delete_offer():
+    data = request.json
+    offer_id = data.get("id")
+
+    if not offer_id:
+        return jsonify(success=False, message="رقم العرض مطلوب")
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute("DELETE FROM offers WHERE id = ?", (offer_id,))
+    conn.commit()
+    conn.close()
+
+    return jsonify(success=True, message="تم حذف العرض بنجاح")
 
 
 # =========================
@@ -213,5 +331,5 @@ def check_points():
 if __name__ == "__main__":
     init_db()
     print("🚀 التطبيق يعمل على http://localhost:10000")
-    print("🧑‍💼 إضافة العروض: http://localhost:10000/admin/offers")
+    print("🧑‍💼 إدارة العروض: http://localhost:10000/admin/offers")
     app.run(host="0.0.0.0", port=10000)
