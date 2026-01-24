@@ -77,10 +77,9 @@ def get_offers_for_customer(tier, points):
 # =========================
 # واجهة إضافة عرض
 # =========================
-    @app.route('/admin/offers')
+@app.route('/admin/offers')
 def admin_offers():
-    return "صفحة العروض"
-    
+    return """
     <!DOCTYPE html>
     <html lang="ar" dir="rtl">
     <head>
@@ -216,4 +215,3 @@ if __name__ == "__main__":
     print("🚀 التطبيق يعمل على http://localhost:10000")
     print("🧑‍💼 إضافة العروض: http://localhost:10000/admin/offers")
     app.run(host="0.0.0.0", port=10000)
-
