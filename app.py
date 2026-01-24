@@ -333,3 +333,4 @@ if __name__ == "__main__":
     print("🚀 التطبيق يعمل على http://localhost:10000")
     print("🧑‍💼 إدارة العروض: http://localhost:10000/admin/offers")
     app.run(host="0.0.0.0", port=10000)
+
