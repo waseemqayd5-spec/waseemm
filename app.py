@@ -1,165 +1,217 @@
-from flask import Flask, request, jsonify, render_template_string, redirect, url_for
+from flask import Flask, request, jsonify
 import sqlite3
 import os
-from twilio.twiml.messaging_response import MessagingResponse
 
 app = Flask(__name__)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "supermarket.db")
 
-# ---------- إنشاء قاعدة البيانات ----------
+DB_PATH = "data/supermarket.db"
+
+
+# =========================
+# تهيئة قاعدة البيانات
+# =========================
 def init_db():
-    db = sqlite3.connect(DB_PATH)
-    cursor = db.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS products (
+    os.makedirs("data", exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # جدول العملاء (مختصر)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS customers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        price REAL NOT NULL
+        phone TEXT UNIQUE,
+        name TEXT,
+        loyalty_points INTEGER DEFAULT 0,
+        total_spent REAL DEFAULT 0,
+        visits INTEGER DEFAULT 0,
+        last_visit TEXT,
+        customer_tier TEXT DEFAULT 'عادي',
+        is_active INTEGER DEFAULT 1
     )
     """)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS orders (
+
+    # جدول العروض
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS offers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        phone TEXT NOT NULL,
-        items TEXT NOT NULL,
-        total REAL NOT NULL,
-        created_at TEXT NOT NULL
+        title TEXT,
+        description TEXT,
+        code TEXT,
+        min_points INTEGER DEFAULT 0,
+        tier TEXT DEFAULT 'عادي',
+        is_active INTEGER DEFAULT 1
     )
     """)
-    db.commit()
-    db.close()
 
-init_db()
-
-# ---------- واجهة إدارة المنتجات (HTML) ----------
-ADMIN_HTML = """
-<!DOCTYPE html>
-<html dir="rtl" lang="ar">
-<head>
-<meta charset="utf-8">
-<title>لوحة إدارة السلع</title>
-<style>
-  body{font-family: Arial; padding:20px; background:#f5f5f5}
-  .box{background:#fff; padding:20px; border-radius:8px; max-width:600px; margin:auto;}
-  input,button{padding:10px; margin:5px 0; width:100%;}
-  table{width:100%; border-collapse:collapse; margin-top:20px;}
-  th,td{padding:8px; border:1px solid #ddd;}
-</style>
-</head>
-<body>
-<div class="box">
-  <h2>إضافة سلعة</h2>
-  <form method="post" action="/add_product">
-    <input name="name" placeholder="اسم السلعة" required>
-    <input name="price" placeholder="السعر" type="number" step="0.01" required>
-    <button type="submit">إضافة</button>
-  </form>
-
-  <h3>السلع المتاحة</h3>
-  <table>
-    <tr><th>الاسم</th><th>السعر</th></tr>
-    {% for p in products %}
-      <tr>
-        <td>{{ p[1] }}</td>
-        <td>{{ p[2] }}</td>
-      </tr>
-    {% endfor %}
-  </table>
-</div>
-</body>
-</html>
-"""
-
-# ---------- صفحة إدارة المنتجات ----------
-@app.route("/admin")
-def admin():
-    db = sqlite3.connect(DB_PATH)
-    cursor = db.cursor()
-    cursor.execute("SELECT * FROM products")
-    products = cursor.fetchall()
-    db.close()
-    return render_template_string(ADMIN_HTML, products=products)
-
-# ---------- إضافة سلعة ----------
-@app.route("/add_product", methods=["POST"])
-def add_product():
-    name = request.form.get("name")
-    price = float(request.form.get("price"))
-    db = sqlite3.connect(DB_PATH)
-    cursor = db.cursor()
-    cursor.execute("INSERT INTO products (name, price) VALUES (?, ?)", (name, price))
-    db.commit()
-    db.close()
-    return redirect(url_for("admin"))
-
-# ---------- WhatsApp webhook ----------
-@app.route("/whatsapp", methods=["POST"])
-def whatsapp():
-    msg = request.form.get("Body").strip().lower()
-    phone = request.form.get("From")
-
-    resp = MessagingResponse()
-
-    # إذا كتب الزبون "قائمة" يظهر له المنتجات
-    if msg == "قائمة":
-        db = sqlite3.connect(DB_PATH)
-        cursor = db.cursor()
-        cursor.execute("SELECT * FROM products")
-        products = cursor.fetchall()
-        db.close()
-
-        text = "قائمة المنتجات:\n"
-        for p in products:
-            text += f"{p[0]}) {p[1]} - {p[2]} ريال\n"
-        text += "\nأرسل طلبك بهذا الشكل:\n1:2,2:1 (يعني رقم المنتج:الكمية)"
-        resp.message(text)
-        return str(resp)
-
-    # إذا كتب الزبون طلب
-    if ":" in msg:
-        try:
-            db = sqlite3.connect(DB_PATH)
-            cursor = db.cursor()
-            cursor.execute("SELECT * FROM products")
-            products = cursor.fetchall()
-
-            # تحويل المنتجات لقاموس
-            prod_dict = {str(p[0]): (p[1], p[2]) for p in products}
-
-            items = msg.split(",")
-            total = 0
-            order_text = ""
-
-            for item in items:
-                pid, qty = item.split(":")
-                qty = int(qty)
-                name, price = prod_dict[pid]
-                total += price * qty
-                order_text += f"{name} x{qty} = {price*qty} ريال\n"
-
-            # حفظ الطلب في قاعدة البيانات
-            import datetime
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute(
-                "INSERT INTO orders (phone, items, total, created_at) VALUES (?, ?, ?, ?)",
-                (phone, msg, total, now)
-            )
-            db.commit()
-            db.close()
-
-            resp.message(f"تم استلام طلبك:\n{order_text}\nالإجمالي: {total} ريال\nشكراً لك!")
-            return str(resp)
-
-        except Exception as e:
-            resp.message("حدث خطأ في الطلب. تأكد من كتابة الطلب بهذا الشكل:\n1:2,2:1")
-            return str(resp)
-
-    # الرد الافتراضي
-    resp.message("أهلاً! اكتب 'قائمة' لعرض المنتجات.")
-    return str(resp)
+    conn.commit()
+    conn.close()
 
 
+# =========================
+# جلب العروض حسب العميل
+# =========================
+def get_offers_for_customer(tier, points):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT title, description, code
+        FROM offers
+        WHERE is_active = 1
+        AND min_points <= ?
+        AND (tier = ? OR tier = 'عادي')
+    """, (points, tier))
+
+    offers = []
+    for row in c.fetchall():
+        offers.append({
+            "title": row[0],
+            "description": row[1],
+            "code": row[2]
+        })
+
+    conn.close()
+    return offers
+
+
+# =========================
+# واجهة إضافة عرض
+# =========================
+@app.route("/admin/offers")
+def add_offer_page():
+    return """
+    <!DOCTYPE html>
+    <html lang="ar" dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>إضافة عرض جديد</title>
+        <style>
+            body { font-family: Arial; background: #f4f6f8; padding: 30px; }
+            .box { background: white; padding: 25px; border-radius: 10px; max-width: 500px; margin: auto; }
+            input, select, button {
+                width: 100%; padding: 12px; margin-top: 10px;
+                border-radius: 6px; border: 1px solid #ccc;
+            }
+            button {
+                background: #27ae60; color: white; font-size: 16px; cursor: pointer;
+            }
+            button:hover { background: #219150; }
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>➕ إضافة عرض جديد</h2>
+
+            <input id="title" placeholder="عنوان العرض">
+            <input id="desc" placeholder="وصف العرض">
+            <input id="code" placeholder="كود العرض">
+            <input id="points" type="number" placeholder="أقل عدد نقاط">
+            
+            <select id="tier">
+                <option value="عادي">عادي</option>
+                <option value="ذهبي">ذهبي</option>
+                <option value="ممتاز">ممتاز</option>
+            </select>
+
+            <button onclick="saveOffer()">💾 حفظ العرض</button>
+            <p id="msg"></p>
+        </div>
+
+        <script>
+            function saveOffer() {
+                fetch("/api/add_offer", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({
+                        title: title.value,
+                        description: desc.value,
+                        code: code.value,
+                        min_points: points.value,
+                        tier: tier.value
+                    })
+                })
+                .then(r => r.json())
+                .then(d => {
+                    msg.innerText = d.message;
+                    msg.style.color = d.success ? "green" : "red";
+                });
+            }
+        </script>
+    </body>
+    </html>
+    """
+
+
+# =========================
+# API إضافة عرض
+# =========================
+@app.route("/api/add_offer", methods=["POST"])
+def add_offer():
+    data = request.json
+
+    if not data.get("title"):
+        return jsonify(success=False, message="العنوان مطلوب")
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute("""
+        INSERT INTO offers (title, description, code, min_points, tier)
+        VALUES (?, ?, ?, ?, ?)
+    """, (
+        data["title"],
+        data.get("description", ""),
+        data.get("code", ""),
+        data.get("min_points", 0),
+        data.get("tier", "عادي")
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return jsonify(success=True, message="✅ تم إضافة العرض بنجاح")
+
+
+# =========================
+# API فحص نقاط العميل
+# =========================
+@app.route("/check_points", methods=["POST"])
+def check_points():
+    phone = request.json.get("phone")
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT name, loyalty_points, customer_tier
+        FROM customers
+        WHERE phone = ? AND is_active = 1
+    """, (phone,))
+
+    row = c.fetchone()
+    conn.close()
+
+    if not row:
+        return jsonify(success=False, message="العميل غير مسجل")
+
+    offers = get_offers_for_customer(row[2], row[1])
+
+    return jsonify(
+        success=True,
+        customer={
+            "name": row[0],
+            "points": row[1],
+            "tier": row[2]
+        },
+        offers=offers
+    )
+
+
+# =========================
+# تشغيل التطبيق
+# =========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
-
+    init_db()
+    print("🚀 التطبيق يعمل على http://localhost:10000")
+    print("🧑‍💼 إضافة العروض: http://localhost:10000/admin/offers")
+    app.run(host="0.0.0.0", port=10000)
