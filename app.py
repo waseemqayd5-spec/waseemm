@@ -1,10 +1,13 @@
-""" تطبيق ويب لنظام نقاط العملاء - سوبر ماركت اولاد قايد محمد """
+"""
+تطبيق ويب لنظام نقاط العملاء وإدارة البضائع - سوبر ماركت اولاد قايد محمد
+تم التصحيح بواسطة: المساعد
+"""
+
 # =============================== الاستيرادات ===============================
 from flask import Flask, request, jsonify, render_template_string
 import sqlite3
 import os
 import datetime
-import json
 
 # =============================== التهيئة ===============================
 app = Flask(__name__)
@@ -60,7 +63,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         product_id INTEGER,
         product_name TEXT,
-        change_type TEXT, -- 'بيع', 'شراء', 'تعديل', 'تالف'
+        change_type TEXT,
         quantity_change INTEGER,
         old_quantity INTEGER,
         new_quantity INTEGER,
@@ -86,21 +89,21 @@ def init_db():
         future_date = today + datetime.timedelta(days=180)
 
         default_products = [
-            ("8801234567890", "أرز بسمتي", "مواد غذائية", 25.0, 18.0, 50, "كيلو", "مورد الأرز",
+            ("8801234567890", "أرز بسمتي", "مواد غذائية", 25.0, 18.0, 50, 10, "كيلو", "مورد الأرز",
              future_date.isoformat()),
-            ("8809876543210", "سكر", "مواد غذائية", 15.0, 11.0, 100, "كيلو", "مورد السكر", future_date.isoformat()),
-            ("8801122334455", "زيت دوار الشمس", "مواد غذائية", 35.0, 28.0, 30, "لتر", "مورد الزيوت",
+            ("8809876543210", "سكر", "مواد غذائية", 15.0, 11.0, 100, 20, "كيلو", "مورد السكر", future_date.isoformat()),
+            ("8801122334455", "زيت دوار الشمس", "مواد غذائية", 35.0, 28.0, 30, 10, "لتر", "مورد الزيوت",
              future_date.isoformat()),
-            ("8805566778899", "حليب طازج", "مبردات", 8.0, 6.0, 40, "لتر", "شركة الألبان",
+            ("8805566778899", "حليب طازج", "مبردات", 8.0, 6.0, 40, 15, "لتر", "شركة الألبان",
              (today + datetime.timedelta(days=14)).isoformat()),
-            ("8809988776655", "شاي", "مواد غذائية", 20.0, 15.0, 60, "علبة", "مورد الشاي", future_date.isoformat()),
+            ("8809988776655", "شاي", "مواد غذائية", 20.0, 15.0, 60, 15, "علبة", "مورد الشاي", future_date.isoformat()),
         ]
 
-        for barcode, name, category, price, cost, quantity, unit, supplier, expiry in default_products:
+        for barcode, name, category, price, cost, quantity, min_qty, unit, supplier, expiry in default_products:
             cursor.execute("""
-                INSERT INTO products (barcode, name, category, price, cost_price, quantity, unit, supplier, expiry_date, added_date, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (barcode, name, category, price, cost, quantity, unit, supplier, expiry, today.isoformat(),
+                INSERT INTO products (barcode, name, category, price, cost_price, quantity, min_quantity, unit, supplier, expiry_date, added_date, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (barcode, name, category, price, cost, quantity, min_qty, unit, supplier, expiry, today.isoformat(),
                   today.isoformat()))
 
     conn.commit()
@@ -226,7 +229,7 @@ def home():
                             </div>
                         `;
                     } else {
-                        resultDiv.innerHTML = <div class="error">❌ ${data.message}</div>;
+                        resultDiv.innerHTML = `<div class="error">❌ ${data.message}</div>`;
                     }
                 });
             }
@@ -238,7 +241,7 @@ def home():
 
                 resultDiv.innerHTML = '<p>جاري تحميل المنتجات...</p>';
 
-                fetch('/products?category=' + encodeURIComponent(category) + '&search=' + encodeURIComponent(search))
+                fetch(`/products?category=${encodeURIComponent(category)}&search=${encodeURIComponent(search)}`)
                     .then(r => r.json())
                     .then(data => {
                         if (data.success) {
@@ -261,7 +264,7 @@ def home():
                             }
                             resultDiv.innerHTML = html;
                         } else {
-                            resultDiv.innerHTML = <div class="error">❌ ${data.message}</div>;
+                            resultDiv.innerHTML = `<div class="error">❌ ${data.message}</div>`;
                         }
                     });
             }
@@ -594,11 +597,11 @@ def admin_products():
                 document.querySelectorAll('.tab').forEach(tab => {
                     tab.classList.remove('active');
                 });
+                event.target.classList.add('active');
+
                 document.querySelectorAll('.content').forEach(content => {
                     content.classList.remove('active');
                 });
-
-                event.target.classList.add('active');
                 document.getElementById(tabName).classList.add('active');
 
                 if (tabName === 'dashboard') loadDashboard();
@@ -660,7 +663,7 @@ def admin_products():
                 const search = document.getElementById('search')?.value || '';
                 const category = document.getElementById('filter-category')?.value || '';
 
-                fetch(/admin/products/list?search=${encodeURIComponent(search)}&category=${encodeURIComponent(category)})
+                fetch(`/admin/products/list?search=${encodeURIComponent(search)}&category=${encodeURIComponent(category)}`)
                     .then(r => r.json())
                     .then(data => {
                         if (data.success) {
@@ -746,7 +749,7 @@ def admin_products():
             }
 
             function editProduct(id) {
-                fetch(/admin/products/${id})
+                fetch(`/admin/products/${id}`)
                     .then(r => r.json())
                     .then(data => {
                         if (data.success) {
@@ -789,7 +792,7 @@ def admin_products():
 
             function deleteProduct(id) {
                 if (confirm('هل أنت متأكد من حذف هذا المنتج؟')) {
-                    fetch(/admin/products/delete/${id}, {
+                    fetch(`/admin/products/delete/${id}`, {
                         method: 'DELETE'
                     })
                     .then(r => r.json())
@@ -1301,14 +1304,15 @@ def admin_dashboard():
             <p>تحت اشراف  م/ وسيم العامري</p>
         </div>
         
-    <div class="red">
-     <h1>•إدارة كاملة للبضائع (إضافة/تعديل/حذف)</h1>
-      <h1>• متابعة المخزون والتنبيهات</h1>
-      <h1> • حركات المخزون وتتبع التغيرات</h1>
-       <h1>   • عرض البضائع للعملا</h1>
-      <h1>• نظام كامل لإدارة المتجر</h1>
-  
-    </h1>
+        <div style="background: #ecf0f1; padding: 20px; border-radius: 10px; margin-bottom: 20px;">
+            <h3>المميزات:</h3>
+            <ul style="list-style: none; padding-right: 20px;">
+                <li>• إدارة كاملة للبضائع (إضافة/تعديل/حذف)</li>
+                <li>• متابعة المخزون والتنبيهات</li>
+                <li>• حركات المخزون وتتبع التغيرات</li>
+                <li>• عرض البضائع للعملاء</li>
+                <li>• نظام كامل لإدارة المتجر</li>
+            </ul>
         </div>
 
         <div class="dashboard-grid">
@@ -1505,27 +1509,43 @@ def add_page():
     return '''
     <!DOCTYPE html>
     <html dir="rtl" lang="ar">
-    <head><meta charset="UTF-8"><title>إضافة عميل</title></head>
-    <body style="padding: 40px;">
-        <h2>➕ إضافة عميل جديد</h2>
-        <input id="name" placeholder="الاسم" style="display:block; margin:10px 0; padding:10px; width:300px;">
-        <input id="phone" placeholder="الهاتف" style="display:block; margin:10px 0; padding:10px; width:300px;">
-        <button onclick="addCustomer()" style="padding:10px 20px;">حفظ</button>
-        <p id="msg"></p>
+    <head>
+        <meta charset="UTF-8">
+        <title>إضافة عميل</title>
+        <style>
+            body { padding: 40px; font-family: Arial; background: #f5f5f5; }
+            .container { max-width: 400px; margin: auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+            input { display:block; margin:15px 0; padding:12px; width:100%; border:2px solid #ddd; border-radius:8px; font-size:16px; }
+            button { background: #4CAF50; color: white; border: none; padding: 15px; width:100%; border-radius:8px; font-size:18px; cursor:pointer; }
+            .back { background: #3498db; margin-top: 10px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h2>➕ إضافة عميل جديد</h2>
+            <input id="name" placeholder="الاسم الكامل" required>
+            <input id="phone" placeholder="رقم الهاتف" required>
+            <button onclick="addCustomer()">حفظ العميل</button>
+            <button class="back" onclick="location.href='/admin'">العودة للوحة التحكم</button>
+            <p id="msg" style="margin-top:15px;"></p>
+        </div>
         <script>
             function addCustomer() {
+                const name = document.getElementById('name').value.trim();
+                const phone = document.getElementById('phone').value.trim();
+                if (!name || !phone) {
+                    document.getElementById('msg').innerText = '⚠ جميع الحقول مطلوبة';
+                    return;
+                }
                 fetch('/add_customer', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        name: document.getElementById('name').value,
-                        phone: document.getElementById('phone').value
-                    })
+                    body: JSON.stringify({ name, phone })
                 })
                 .then(r => r.json())
-                .then(d => { 
-                    document.getElementById('msg').innerText = d.message;
-                    if (d.success) {
+                .then(data => { 
+                    document.getElementById('msg').innerText = data.message;
+                    if (data.success) {
                         document.getElementById('name').value = '';
                         document.getElementById('phone').value = '';
                     }
@@ -1565,21 +1585,20 @@ def add_customer():
     except Exception as e:
         return jsonify({"success": False, "message": f"خطأ: {str(e)}"})
 
-
 # =============================== التشغيل الرئيسي ===============================
-if __name__== '__main__':
+if __name__ == '__main__':
     init_db()
     print("=" * 70)
     print("🚀 نظام نقاط العملاء وإدارة البضائع - سوبر ماركت اولاد قايد محمد")
     print("=" * 70)
     print("📁 قاعدة البيانات: data/supermarket.db")
     print("🌐 الروابط المتاحة:")
-    print("   👉 http://localhost:5000/            (للعملاء - الرئيسية)")
-    print("   👉 http://localhost:5000/admin       (للإدارة - لوحة التحكم)")
-    print("   👉 http://localhost:5000/admin/products (إدارة البضائع)")
-    print("   👉 http://localhost:5000/stats       (الإحصائيات)")
-    print("   👉 http://localhost:5000/add         (إضافة عميل)")
-    print("   👉 http://localhost:5000/admin/customers (قائمة العملاء)")
+    print("   👉 / (للعملاء - الرئيسية)")
+    print("   👉 /admin (للإدارة - لوحة التحكم)")
+    print("   👉 /admin/products (إدارة البضائع)")
+    print("   👉 /stats (الإحصائيات)")
+    print("   👉 /add (إضافة عميل)")
+    print("   👉 /admin/customers (قائمة العملاء)")
     print("=" * 70)
     print("📦 المميزات المضافة:")
     print("   • إدارة كاملة للبضائع (إضافة/تعديل/حذف)")
@@ -1589,5 +1608,7 @@ if __name__== '__main__':
     print("   • نظام كامل لإدارة المتجر")
     print("=" * 70)
     print("⏳ جاري التشغيل...")
-    app.run(host='127.0.0.1', port=5000, debug=True)
-
+    
+    # استخدم المنفذ من متغير البيئة PORT (الذي يوفره Render) أو 5000 للتشغيل المحلي
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)  # debug=False مهم للإنتاج, debug=True)
