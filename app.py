@@ -238,6 +238,10 @@ def init_db():
     conn.close()
 
 
+# تهيئة قاعدة البيانات عند بدء التطبيق (تضمن إنشاء الجداول في بيئة الإنتاج)
+init_db()
+
+
 # =============================== واجهات العملاء ===============================
 @app.route('/')
 def home():
@@ -1229,11 +1233,13 @@ def add_product():
         today = datetime.date.today().isoformat()
 
         if DATABASE_URL:
+            # استخدام RETURNING id للحصول على معرف المنتج في PostgreSQL
             cur.execute("""
                 INSERT INTO products (
                     barcode, name, category, price, cost_price, quantity, 
                     min_quantity, unit, supplier, expiry_date, added_date, last_updated
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
             """, (
                 data['barcode'],
                 data['name'],
@@ -1248,6 +1254,7 @@ def add_product():
                 today,
                 today
             ))
+            product_id = cur.fetchone()[0]  # استرجاع id من النتيجة
         else:
             cur.execute("""
                 INSERT INTO products (
@@ -1268,8 +1275,7 @@ def add_product():
                 today,
                 today
             ))
-
-        product_id = cur.lastrowid if not DATABASE_URL else None  # في PostgreSQL نحتاج إلى استرجاع id بطريقة مختلفة
+            product_id = cur.lastrowid
 
         # تسجيل حركة المخزون
         if DATABASE_URL:
@@ -1927,7 +1933,7 @@ def add_customer():
 
 # =============================== التشغيل الرئيسي ===============================
 if __name__ == '__main__':
-    init_db()
+    # تم نقل init_db() إلى الأعلى ليتم تنفيذه عند استيراد الوحدة
     print("=" * 70)
     print("🚀 نظام نقاط العملاء وإدارة البضائع - سوبر ماركت اولاد قايد محمد")
     print("=" * 70)
@@ -1949,6 +1955,3 @@ if __name__ == '__main__':
     print("=" * 70)
     print("⏳ جاري التشغيل...")
     app.run(host='127.0.0.1', port=5000, debug=True)
-
-
-
