@@ -296,6 +296,8 @@ def home():
     </head>
     <body>
         <h1>🛒 سوبر ماركت اولاد قايد محمد</h1>
+
+        <h>إعداد وتصميم  《 م/وسيم الحميدي 》</h>
         <div class="container">
             <!-- القسم الرئيسي -->
             <div class="main-content">
@@ -2065,3 +2067,4 @@ if __name__ == '__main__':
     print("=" * 70)
     print("⏳ جاري التشغيل...")
     app.run(host='127.0.0.1', port=5000, debug=True)
+
