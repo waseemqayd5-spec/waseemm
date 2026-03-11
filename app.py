@@ -522,12 +522,13 @@ def home():
                     alert('السلة فارغة، أضف منتجات أولاً');
                     return;
                 }
-                let message = '*طلب جديد من سوبر ماركت اولاد قايد محمد*%0A';
+                let message = '*طلب جديد من سوبر ماركت اولاد قايد محمد للتجاره العامة*%0A';
                 let total = 0;
                 cart.forEach(item => {
                     const itemTotal = item.price * item.quantity;
                     message += `- ${item.name} (${item.price} ريال) × ${item.quantity} = ${itemTotal} ريال%0A`;
                     total += itemTotal;
+                    ==============================
                 });
                 message += `%0A*الإجمالي: ${total} ريال*`;
                 // الرقم المطلوب: 967770295876
@@ -2067,5 +2068,6 @@ if __name__ == '__main__':
     print("=" * 70)
     print("⏳ جاري التشغيل...")
     app.run(host='127.0.0.1', port=5000, debug=True)
+
 
 
