@@ -528,8 +528,8 @@ def home():
                     const itemTotal = item.price * item.quantity;
                     message += `- ${item.name} (${item.price} ريال) × ${item.quantity} = ${itemTotal} ريال%0A`;
                     total += itemTotal;
-                    ==============================
-                });
+
+          });
                 message += `%0A*الإجمالي: ${total} ريال*`;
                 // الرقم المطلوب: 967770295876
                 window.open(`https://wa.me/967770295876?text=${message}`, '_blank');
@@ -2068,6 +2068,7 @@ if __name__ == '__main__':
     print("=" * 70)
     print("⏳ جاري التشغيل...")
     app.run(host='127.0.0.1', port=5000, debug=True)
+
 
 
 
