@@ -532,8 +532,8 @@ def home():
 
           });
                 message += `%0A*الإجمالي: ${total} ريال*`;
-                // الرقم المطلوب: 967770295876
-                window.open(`https://wa.me/967770295876?text=${message}`, '_blank');
+                // الرقم المطلوب:margi71t02370
+                window.open(`https://wa.me/967771602370?text=${message}`, '_blank');
             }
 
             // التحميل الأولي
@@ -662,9 +662,9 @@ def get_products():
 def get_offers():
     """API للحصول على العروض"""
     offers = [
-        {"title": "خصم 10%", "description": "على مشترياتك القادمة", "code": "DISCOUNT10"},
-        {"title": "توصيل مجاني", "description": "للطلبات فوق 100 ريال", "code": "FREESHIP"},
-        {"title": "هدية مجانية", "description": "مع كل شراء فوق 200 ريال", "code": "FREE_GIFT"},
+        {"title": "خصم 5%", "description": "على مشترياتك القادمة", "code": "DISCOUNT10"},
+        {"title": "توصيل مجاني", "description": "للطلبات فوق 25000 الف", "code": "FREESHIP"},
+        {"title": "هدية مجانية", "description": "مع كل شراء 10 قطع بسعر  10000 الف ", "code": "FREE_GIFT"},
         {"title": "نقاط مضاعفة", "description": "في نهاية الأسبوع", "code": "DOUBLE_POINTS"}
     ]
     return jsonify({"success": True, "offers": offers})
@@ -2069,6 +2069,7 @@ if __name__ == '__main__':
     print("=" * 70)
     print("⏳ جاري التشغيل...")
     app.run(host='127.0.0.1', port=5000, debug=True)
+
 
 
 
