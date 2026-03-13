@@ -1,0 +1,11 @@
+{
+  "background_color": "#ffffff",
+  "dir": "ltr",
+  "display": "standalone",
+  "name": "Awlad Qaid Supermarket",
+  "orientation": "any",
+  "scope": "/",
+  "short_name": "waseemm-2.onrender",
+  "start_url": "/",
+  "theme_color": "#8b8677"
+}
