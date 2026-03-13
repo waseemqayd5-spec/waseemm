@@ -1,0 +1,9 @@
+from flask import send_from_directory
+import os
+
+# كود لتقديم ملف التحقق من التطبيق
+@app.route('/.well-known/assetlinks.json')
+def serve_assetlinks():
+    return send_from_directory(os.path.join(app.root_path, '.well-known'), 
+                               'assetlinks.json', 
+                               mimetype='application/json')
