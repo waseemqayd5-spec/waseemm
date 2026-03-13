@@ -3,7 +3,7 @@ import os
 
 app = Flask(__name__)
 
-# 1. كود الـ HTML المتكامل مع إعدادات التطبيق
+# 1. كود الـ HTML المتكامل (الواجهة)
 html_template = """
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -11,78 +11,53 @@ html_template = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>وسيم - Portfolio</title>
-    
     <link rel="manifest" href="/manifest.json">
-    <meta name="theme-color" content="#000000">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black">
-    
+    <meta name="theme-color" content="#d4af37">
     <style>
         body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            margin: 0; 
-            display: flex; 
-            justify-content: center; 
-            align-items: center; 
-            height: 100vh; 
-            background-color: #1a1a1a; 
-            color: white; 
+            font-family: 'Arial', sans-serif; 
+            margin: 0; display: flex; justify-content: center; align-items: center; 
+            height: 100vh; background-color: #000; color: #d4af37; 
         }
         .container { 
-            text-align: center; 
-            padding: 30px; 
-            border: 2px solid #d4af37; 
-            border-radius: 15px; 
-            background: #000;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            text-align: center; padding: 40px; 
+            border: 2px solid #d4af37; border-radius: 20px; 
+            box-shadow: 0 0 20px rgba(212, 175, 55, 0.5);
         }
-        h1 { color: #d4af37; margin-bottom: 10px; }
-        p { color: #ccc; font-size: 1.1em; }
-        .btn {
-            display: inline-block;
-            margin-top: 20px;
-            padding: 10px 25px;
-            background-color: #d4af37;
-            color: black;
-            text-decoration: none;
-            border-radius: 5px;
-            font-weight: bold;
-        }
+        h1 { font-size: 2.5em; margin-bottom: 10px; }
+        p { color: #fff; font-size: 1.2em; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>مرحباً بك في تطبيقي</h1>
-        <p>هذا الموقع الآن مجهز تماماً ليصبح تطبيق أندرويد.</p>
-        <p>المبرمج: وسيم الهُميدي</p>
-        <a href="#" class="btn">استكشف أعمالي</a>
+        <h1>وسيم الهُميدي</h1>
+        <p>مرحباً بك في تطبيقي الشخصي</p>
+        <p>المهنة: مهندس ذكاء اصطناعي</p>
     </div>
 </body>
 </html>
 """
 
-# 2. توليد ملف المانيفست (Manifest) تلقائياً
+# 2. توليد المانيفست مع رابط أيقونة خارجي (لحل مشكلة الخطأ في الصورة)
 @app.route('/manifest.json')
 def manifest():
     return jsonify({
-        "name": "وسيم بورتفوليو",
+        "name": "Waseem Portfolio",
         "short_name": "Waseem",
-        "description": "معرض أعمال المبرمج وسيم",
         "start_url": "/",
         "display": "standalone",
-        "background_color": "#1a1a1a",
-        "theme_color": "#000000",
+        "background_color": "#000000",
+        "theme_color": "#d4af37",
         "icons": [
             {
-                "src": "https://waseemm-2.onrender.com/static/icons/icon-512x512.png",
+                "src": "https://cdn-icons-png.flaticon.com/512/7153/7153150.png",
                 "sizes": "512x512",
                 "type": "image/png",
-                "purpose": "any maskable"
+                "purpose": "any"
             }
         ]
     })
 
-# 3. الصفحة الرئيسية
 @app.route('/')
 def home():
     return render_template_string(html_template)
