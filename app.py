@@ -2,22 +2,35 @@
 تطبيق ويب لنظام نقاط العملاء وإدارة البضائع - سوبر ماركت اولاد قايد محمد
 يدعم قواعد البيانات SQLite (للتطوير المحلي) و PostgreSQL (للإنتاج على Render)
 الألوان المعدلة: أسود وذهبي
-تمت إضافة تحسينات المرحلة الأولى: Responsive, Pagination, Indexes, Activity Logs, Animations
+تمت إضافة: رفع صور المنتجات من الجهاز، وإدخال بيانات العميل (الاسم، الهاتف، العنوان) في الفاتورة عبر واتساب
 """
 
 # =============================== الاستيرادات ===============================
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, url_for
 import os
 import datetime
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import sqlite3
+from werkzeug.utils import secure_filename
 
 # =============================== التهيئة ===============================
 app = Flask(__name__)
 
 # تحديد رابط قاعدة البيانات من متغير البيئة (سيكون موجوداً في Render)
 DATABASE_URL = os.environ.get('DATABASE_URL', None)
+
+# إعدادات رفع الصور
+UPLOAD_FOLDER = os.path.join('static', 'uploads')
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
+
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
 def get_db_connection():
@@ -35,31 +48,6 @@ def get_db_connection():
         conn = sqlite3.connect('data/supermarket.db')
         conn.row_factory = sqlite3.Row   # لإرجاع الصفوف كقاموس
     return conn
-
-
-def execute_query(query, params=None, fetch_one=False, fetch_all=False, commit=False):
-    """
-    دالة مساعدة لتنفيذ الاستعلامات مع التعامل مع الفروقات بين SQLite و PostgreSQL
-    """
-    conn = get_db_connection()
-    cur = conn.cursor()
-    try:
-        if params is None:
-            params = ()
-        cur.execute(query, params)
-        if commit:
-            conn.commit()
-        if fetch_one:
-            result = cur.fetchone()
-            return result
-        elif fetch_all:
-            result = cur.fetchall()
-            return result
-        else:
-            return None
-    finally:
-        cur.close()
-        conn.close()
 
 
 # =============================== إنشاء الجداول والبيانات الافتراضية ===============================
@@ -99,6 +87,7 @@ def init_db():
                 expiry_date VARCHAR(10),
                 added_date VARCHAR(10),
                 last_updated VARCHAR(10),
+                image_path VARCHAR(255),  -- مسار الصورة
                 is_active INTEGER DEFAULT 1
             )
         """)
@@ -118,28 +107,6 @@ def init_db():
                 FOREIGN KEY (product_id) REFERENCES products (id)
             )
         """)
-
-        # جدول تسجيل الأنشطة
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS user_activity (
-                id SERIAL PRIMARY KEY,
-                user VARCHAR(50),
-                action VARCHAR(100),
-                entity_type VARCHAR(50),
-                entity_id INTEGER,
-                details TEXT,
-                ip_address VARCHAR(45),
-                timestamp TEXT
-            )
-        """)
-
-        # إضافة فهارس لتحسين الأداء
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_products_name ON products(name)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_products_category ON products(category)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_products_is_active ON products(is_active)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_inventory_logs_product_id ON inventory_logs(product_id)")
 
         # التحقق من وجود بيانات افتراضية
         cur.execute("SELECT COUNT(*) FROM customers")
@@ -171,9 +138,9 @@ def init_db():
             for prod in default_products:
                 cur.execute("""
                     INSERT INTO products (barcode, name, category, price, cost_price, quantity, min_quantity,
-                                          unit, supplier, expiry_date, added_date, last_updated)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (*prod, today.isoformat(), today.isoformat()))
+                                          unit, supplier, expiry_date, added_date, last_updated, image_path)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (*prod, today.isoformat(), today.isoformat(), ''))
     else:
         # SQLite
         cur.execute("""
@@ -205,6 +172,7 @@ def init_db():
                 expiry_date TEXT,
                 added_date TEXT,
                 last_updated TEXT,
+                image_path TEXT,
                 is_active INTEGER DEFAULT 1
             )
         """)
@@ -224,28 +192,6 @@ def init_db():
                 FOREIGN KEY (product_id) REFERENCES products (id)
             )
         """)
-
-        # جدول تسجيل الأنشطة
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS user_activity (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user TEXT,
-                action TEXT,
-                entity_type TEXT,
-                entity_id INTEGER,
-                details TEXT,
-                ip_address TEXT,
-                timestamp TEXT
-            )
-        """)
-
-        # إضافة فهارس
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_products_name ON products(name)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_products_category ON products(category)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_products_is_active ON products(is_active)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_inventory_logs_product_id ON inventory_logs(product_id)")
 
         # التحقق من وجود بيانات افتراضية
         cur.execute("SELECT COUNT(*) FROM customers")
@@ -276,47 +222,19 @@ def init_db():
             for prod in default_products:
                 cur.execute("""
                     INSERT INTO products (barcode, name, category, price, cost_price, quantity, min_quantity,
-                                          unit, supplier, expiry_date, added_date, last_updated)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (*prod, today.isoformat(), today.isoformat()))
+                                          unit, supplier, expiry_date, added_date, last_updated, image_path)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (*prod, today.isoformat(), today.isoformat(), ''))
 
     conn.commit()
     conn.close()
 
 
-# تهيئة قاعدة البيانات عند بدء التطبيق
+# تهيئة قاعدة البيانات عند بدء التطبيق (تضمن إنشاء الجداول في بيئة الإنتاج)
 init_db()
 
 
-# دالة تسجيل الأنشطة
-def log_user_activity(user, action, entity_type, entity_id=None, details=None):
-    """تسجيل نشاط المستخدم"""
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # الحصول على IP (بشكل بسيط)
-        ip_address = request.remote_addr if request else '127.0.0.1'
-        
-        if DATABASE_URL:
-            cur.execute("""
-                INSERT INTO user_activity (user, action, entity_type, entity_id, details, ip_address, timestamp)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (user, action, entity_type, entity_id, details, ip_address, datetime.datetime.now().isoformat()))
-        else:
-            cur.execute("""
-                INSERT INTO user_activity (user, action, entity_type, entity_id, details, ip_address, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (user, action, entity_type, entity_id, details, ip_address, datetime.datetime.now().isoformat()))
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"خطأ في تسجيل النشاط: {e}")
-
-
-# =============================== واجهات العملاء ===============================
+# =============================== واجهات العملاء (المعدلة مع رقم واتساب) ===============================
 @app.route('/')
 def home():
     return render_template_string('''
@@ -343,20 +261,18 @@ def home():
             .filters { display: flex; gap: 15px; margin-bottom: 25px; flex-wrap: wrap; }
             .filters select, .filters input { flex: 1; padding: 15px; border: none; border-radius: 12px; font-size: 16px; background: #111; color: #FFD700; border: 1px solid #FFD700; box-shadow: 0 3px 10px rgba(255,215,0,0.1); }
             .products-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; }
-            .product-card { background: #111; border-radius: 15px; padding: 20px; text-align: center; box-shadow: 0 5px 15px rgba(255,215,0,0.2); transition: transform 0.3s ease, box-shadow 0.3s ease; border: 1px solid #FFD700; color: #FFD700; }
+            .product-card { background: #111; border-radius: 15px; padding: 20px; text-align: center; box-shadow: 0 5px 15px rgba(255,215,0,0.2); transition: 0.3s; border: 1px solid #FFD700; color: #FFD700; }
             .product-card:hover { transform: translateY(-5px); box-shadow: 0 10px 25px rgba(255,215,0,0.4); }
             .product-icon { font-size: 50px; margin-bottom: 10px; }
             .product-name { font-weight: bold; font-size: 18px; color: #FFD700; margin-bottom: 5px; }
             .product-price { color: #FFD700; font-size: 22px; font-weight: bold; margin: 10px 0; }
             .product-stock { color: #FFD700; font-size: 14px; margin-bottom: 15px; opacity: 0.8; }
-            .add-to-cart-btn { background: #FFD700; color: #000; border: none; padding: 12px; border-radius: 8px; width: 100%; font-size: 16px; cursor: pointer; transition: background 0.3s ease, transform 0.2s ease; display: flex; align-items: center; justify-content: center; gap: 5px; font-weight: bold; }
+            .add-to-cart-btn { background: #FFD700; color: #000; border: none; padding: 12px; border-radius: 8px; width: 100%; font-size: 16px; cursor: pointer; transition: 0.3s; display: flex; align-items: center; justify-content: center; gap: 5px; font-weight: bold; }
             .add-to-cart-btn:hover { background: #e6c200; }
-            .add-to-cart-btn:active { transform: scale(0.95); }
             .cart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #FFD700; }
             .cart-header h3 { color: #FFD700; }
             .cart-items { max-height: 400px; overflow-y: auto; margin-bottom: 20px; }
-            .cart-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #000; border-radius: 8px; margin-bottom: 10px; border: 1px solid #FFD700; color: #FFD700; animation: slideIn 0.3s ease; }
-            @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+            .cart-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #000; border-radius: 8px; margin-bottom: 10px; border: 1px solid #FFD700; color: #FFD700; }
             .cart-item-info { flex: 1; }
             .cart-item-name { font-weight: bold; color: #FFD700; }
             .cart-item-price { color: #FFD700; font-size: 14px; opacity: 0.8; }
@@ -368,14 +284,18 @@ def home():
             .clear-cart-btn { background: #FFD700; color: #000; border: none; padding: 10px; border-radius: 5px; cursor: pointer; font-size: 14px; font-weight: bold; }
             .offer-card { background: #111; border-radius: 15px; padding: 20px; margin-bottom: 15px; text-align: center; border: 1px solid #FFD700; color: #FFD700; }
             .offer-code { background: #FFD700; color: #000; padding: 5px 10px; border-radius: 5px; display: inline-block; margin-top: 10px; font-weight: bold; }
-            /* Pagination */
-            #pagination { margin-top: 20px; text-align: center; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
-            .pagination-btn { background: #FFD700; color: #000; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; transition: 0.3s; font-weight: bold; }
-            .pagination-btn:hover { background: #e6c200; }
-            .pagination-btn.active { background: #000; color: #FFD700; border: 1px solid #FFD700; }
+            /* نافذة بيانات العميل */
+            .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 1000; align-items: center; justify-content: center; }
+            .modal-content { background: #111; border: 2px solid #FFD700; border-radius: 15px; padding: 25px; width: 90%; max-width: 400px; color: #FFD700; }
+            .modal-content h3 { text-align: center; margin-bottom: 20px; }
+            .modal-content input { width:100%; padding:12px; margin-bottom:15px; border:2px solid #FFD700; border-radius:8px; background:#000; color:#FFD700; }
+            .modal-buttons { display: flex; gap: 10px; }
+            .modal-buttons button { flex: 1; padding: 12px; border-radius: 8px; font-weight: bold; cursor: pointer; }
+            .btn-confirm { background: #FFD700; color: #000; border: none; }
+            .btn-cancel { background: #000; color: #FFD700; border: 1px solid #FFD700; }
             /* تحسينات الجوال */
             @media (max-width: 480px) {
-                .container { gap: 10px; }
+                .container { grid-template-columns: 1fr; gap: 10px; }
                 .nav button { font-size: 14px; padding: 10px; min-width: 80px; }
                 .product-card { padding: 15px; }
                 .product-icon { font-size: 40px; }
@@ -413,17 +333,16 @@ def home():
                 <!-- قسم المنتجات -->
                 <div id="products-section" class="section">
                     <div class="filters">
-                        <select id="category-filter" onchange="loadProducts(1)">
+                        <select id="category-filter" onchange="loadProducts()">
                             <option value="">جميع الفئات</option>
                             <option value="مواد غذائية">مواد غذائية</option>
                             <option value="مبردات">مبردات</option>
                             <option value="معلبات">معلبات</option>
                             <option value="منظفات">منظفات</option>
                         </select>
-                        <input type="text" id="search-product" placeholder="🔍 ابحث عن منتج..." onkeyup="loadProducts(1)">
+                        <input type="text" id="search-product" placeholder="🔍 ابحث عن منتج..." onkeyup="loadProducts()">
                     </div>
                     <div id="products-result" class="products-grid"></div>
-                    <div id="pagination"></div>
                 </div>
 
                 <!-- قسم العروض -->
@@ -442,19 +361,29 @@ def home():
                     <p style="text-align:center; color:#FFD700;">السلة فارغة</p>
                 </div>
                 <div id="cart-total" class="cart-total">الإجمالي: 0 ريال</div>
-                <button class="whatsapp-btn" onclick="sendWhatsApp()">
+                <button class="whatsapp-btn" onclick="openCustomerModal()">
                     <img src="https://img.icons8.com/color/24/000000/whatsapp--v1.png" style="vertical-align:middle;"> إرسال الطلب عبر واتساب
                 </button>
+            </div>
+        </div>
+
+        <!-- نافذة إدخال بيانات العميل -->
+        <div id="customerModal" class="modal">
+            <div class="modal-content">
+                <h3>📋 أدخل بيانات العميل</h3>
+                <input type="text" id="customerName" placeholder="👤 الاسم الكامل *" required>
+                <input type="tel" id="customerPhone" placeholder="📱 رقم الهاتف *" required>
+                <input type="text" id="customerAddress" placeholder="📍 العنوان (اختياري)">
+                <div class="modal-buttons">
+                    <button class="btn-confirm" onclick="submitCustomerInfo()">تأكيد</button>
+                    <button class="btn-cancel" onclick="closeCustomerModal()">إلغاء</button>
+                </div>
             </div>
         </div>
 
         <script>
             // متغيرات السلة
             let cart = [];
-            // متغيرات pagination
-            let currentPage = 1;
-            let totalPages = 1;
-            const productsPerPage = 20;
 
             // تبديل الأقسام
             function showSection(sectionId) {
@@ -462,7 +391,7 @@ def home():
                 event.target.classList.add('active');
                 document.querySelectorAll('.section').forEach(sec => sec.classList.remove('active'));
                 document.getElementById(sectionId + '-section').classList.add('active');
-                if (sectionId === 'products') loadProducts(1);
+                if (sectionId === 'products') loadProducts();
                 if (sectionId === 'offers') loadOffers();
             }
 
@@ -500,24 +429,23 @@ def home():
                 });
             }
 
-            // تحميل المنتجات مع pagination
-            function loadProducts(page = 1) {
+            // تحميل المنتجات
+            function loadProducts() {
                 const category = document.getElementById('category-filter').value;
                 const search = document.getElementById('search-product').value;
                 const resultDiv = document.getElementById('products-result');
-                const paginationDiv = document.getElementById('pagination');
-                
                 resultDiv.innerHTML = '<p style="color:#FFD700;">جاري تحميل المنتجات...</p>';
-                
-                fetch(`/products?category=${encodeURIComponent(category)}&search=${encodeURIComponent(search)}&page=${page}&per_page=${productsPerPage}`)
+                fetch(`/products?category=${encodeURIComponent(category)}&search=${encodeURIComponent(search)}`)
                     .then(r => r.json())
                     .then(data => {
                         if (data.success) {
                             let html = '';
                             data.products.forEach(product => {
+                                // عرض الصورة إذا وجدت، وإلا أيقونة افتراضية
+                                const imageHtml = product.image ? `<img src="${product.image}" style="width:80px; height:80px; object-fit:cover; border-radius:10px; margin-bottom:10px;">` : '<div class="product-icon">📦</div>';
                                 html += `
                                     <div class="product-card">
-                                        <div class="product-icon">📦</div>
+                                        ${imageHtml}
                                         <div class="product-name">${product.name}</div>
                                         <div class="product-price">${product.price} ريال</div>
                                         <div class="product-stock">${product.quantity} ${product.unit}</div>
@@ -528,47 +456,10 @@ def home():
                                 `;
                             });
                             resultDiv.innerHTML = html || '<p style="color:#FFD700;">لا توجد منتجات</p>';
-                            
-                            // تحديث أزرار pagination
-                            currentPage = data.page;
-                            totalPages = data.total_pages;
-                            updatePagination();
                         } else {
                             resultDiv.innerHTML = `<p style="color:#FFD700;">❌ ${data.message}</p>`;
                         }
                     });
-            }
-
-            // تحديث أزرار pagination
-            function updatePagination() {
-                const paginationDiv = document.getElementById('pagination');
-                if (totalPages <= 1) {
-                    paginationDiv.innerHTML = '';
-                    return;
-                }
-                
-                let html = '';
-                
-                // زر الصفحة السابقة
-                if (currentPage > 1) {
-                    html += `<button class="pagination-btn" onclick="loadProducts(${currentPage - 1})">السابق</button>`;
-                }
-                
-                // أرقام الصفحات
-                for (let i = 1; i <= totalPages; i++) {
-                    if (i === currentPage) {
-                        html += `<button class="pagination-btn active" style="background:#000; color:#FFD700; border:1px solid #FFD700;">${i}</button>`;
-                    } else {
-                        html += `<button class="pagination-btn" onclick="loadProducts(${i})">${i}</button>`;
-                    }
-                }
-                
-                // زر الصفحة التالية
-                if (currentPage < totalPages) {
-                    html += `<button class="pagination-btn" onclick="loadProducts(${currentPage + 1})">التالي</button>`;
-                }
-                
-                paginationDiv.innerHTML = html;
             }
 
             // تحميل العروض
@@ -655,27 +546,66 @@ def home():
                 }
             }
 
-            // إرسال الطلب عبر واتساب
-            function sendWhatsApp() {
+            // دوال نافذة بيانات العميل
+            function openCustomerModal() {
                 if (cart.length === 0) {
                     alert('السلة فارغة، أضف منتجات أولاً');
                     return;
                 }
-                let message = '*طلب جديد من سوبر ماركت اولاد قايد محمد للتجاره العامة*%0A';
+                document.getElementById('customerModal').style.display = 'flex';
+            }
+
+            function closeCustomerModal() {
+                document.getElementById('customerModal').style.display = 'none';
+            }
+
+            // إرسال الطلب عبر واتساب مع بيانات العميل
+            function submitCustomerInfo() {
+                const name = document.getElementById('customerName').value.trim();
+                const phone = document.getElementById('customerPhone').value.trim();
+                const address = document.getElementById('customerAddress').value.trim();
+
+                if (!name || !phone) {
+                    alert('❌ الاسم ورقم الهاتف مطلوبان');
+                    return;
+                }
+
+                // بناء رسالة الفاتورة
+                let message = '*🧾 فاتورة مشتريات - سوبر ماركت اولاد قايد محمد*%0A';
+                message += '------------------------------------%0A';
+                message += `*👤 العميل:* ${name}%0A`;
+                message += `*📱 الهاتف:* ${phone}%0A`;
+                if (address) message += `*📍 العنوان:* ${address}%0A`;
+                message += `*📅 التاريخ:* ${new Date().toLocaleDateString('ar-EG')}%0A`;
+                message += '------------------------------------%0A';
+                message += '*المنتجات:*%0A';
+
                 let total = 0;
                 cart.forEach(item => {
                     const itemTotal = item.price * item.quantity;
                     message += `- ${item.name} (${item.price} ريال) × ${item.quantity} = ${itemTotal} ريال%0A`;
                     total += itemTotal;
                 });
-                message += `%0A*الإجمالي: ${total} ريال*`;
+
+                message += '------------------------------------%0A';
+                message += `*💰 الإجمالي: ${total} ريال*%0A`;
+                message += '------------------------------------%0A';
+                message += 'شكراً لتسوقكم معنا 🙏';
+
+                // إرسال عبر واتساب
                 window.open(`https://wa.me/967771602370?text=${message}`, '_blank');
+
+                // إغلاق النافذة وتفريغ الحقول
+                closeCustomerModal();
+                document.getElementById('customerName').value = '';
+                document.getElementById('customerPhone').value = '';
+                document.getElementById('customerAddress').value = '';
             }
 
             // التحميل الأولي
             window.onload = function() {
                 loadCart();
-                loadProducts(1);
+                loadProducts();
                 loadOffers();
             };
         </script>
@@ -736,33 +666,16 @@ def check_points():
 
 @app.route('/products')
 def get_products():
-    """API للحصول على البضائع مع pagination"""
+    """API للحصول على البضائع مع id"""
     try:
         category = request.args.get('category', '')
         search = request.args.get('search', '')
-        page = int(request.args.get('page', 1))
-        per_page = int(request.args.get('per_page', 20))
-        offset = (page - 1) * per_page
 
         conn = get_db_connection()
         cur = conn.cursor()
 
         if DATABASE_URL:
-            # استعلام لحساب العدد الإجمالي
-            count_query = "SELECT COUNT(*) FROM products WHERE is_active = 1"
-            count_params = []
-            if category:
-                count_query += " AND category = %s"
-                count_params.append(category)
-            if search:
-                count_query += " AND (name LIKE %s OR barcode LIKE %s)"
-                count_params.append(f'%{search}%')
-                count_params.append(f'%{search}%')
-            cur.execute(count_query, count_params)
-            total_count = cur.fetchone()[0] or 0
-
-            # استعلام لجلب البيانات مع pagination
-            query = "SELECT id, name, price, quantity, unit, category FROM products WHERE is_active = 1"
+            query = "SELECT id, name, price, quantity, unit, category, image_path FROM products WHERE is_active = 1"
             params = []
             if category:
                 query += " AND category = %s"
@@ -771,25 +684,10 @@ def get_products():
                 query += " AND (name LIKE %s OR barcode LIKE %s)"
                 params.append(f'%{search}%')
                 params.append(f'%{search}%')
-            query += " ORDER BY name LIMIT %s OFFSET %s"
-            params.append(per_page)
-            params.append(offset)
+            query += " ORDER BY name"
             cur.execute(query, params)
         else:
-            # SQLite
-            count_query = "SELECT COUNT(*) FROM products WHERE is_active = 1"
-            count_params = []
-            if category:
-                count_query += " AND category = ?"
-                count_params.append(category)
-            if search:
-                count_query += " AND (name LIKE ? OR barcode LIKE ?)"
-                count_params.append(f'%{search}%')
-                count_params.append(f'%{search}%')
-            cur.execute(count_query, count_params)
-            total_count = cur.fetchone()[0] or 0
-
-            query = "SELECT id, name, price, quantity, unit, category FROM products WHERE is_active = 1"
+            query = "SELECT id, name, price, quantity, unit, category, image_path FROM products WHERE is_active = 1"
             params = []
             if category:
                 query += " AND category = ?"
@@ -798,9 +696,7 @@ def get_products():
                 query += " AND (name LIKE ? OR barcode LIKE ?)"
                 params.append(f'%{search}%')
                 params.append(f'%{search}%')
-            query += " ORDER BY name LIMIT ? OFFSET ?"
-            params.append(per_page)
-            params.append(offset)
+            query += " ORDER BY name"
             cur.execute(query, params)
 
         products = cur.fetchall()
@@ -809,22 +705,23 @@ def get_products():
 
         products_list = []
         for product in products:
+            # بناء رابط الصورة إذا وجدت
+            image_url = None
+            if product[6]:
+                image_url = url_for('static', filename=f'uploads/{product[6]}', _external=True)
             products_list.append({
                 "id": product[0],
                 "name": product[1],
                 "price": product[2],
                 "quantity": product[3],
                 "unit": product[4],
-                "category": product[5]
+                "category": product[5],
+                "image": image_url
             })
 
         return jsonify({
             "success": True,
             "count": len(products_list),
-            "total": total_count,
-            "page": page,
-            "per_page": per_page,
-            "total_pages": (total_count + per_page - 1) // per_page if total_count > 0 else 0,
             "products": products_list
         })
 
@@ -847,6 +744,7 @@ def get_offers():
 # =============================== واجهات إدارة البضائع ===============================
 @app.route('/admin/products')
 def admin_products():
+    # (هذا هو الكود الكامل لإدارة البضائع، تم تضمينه كاملاً مع إضافة رفع الصور)
     return render_template_string('''
     <!DOCTYPE html>
     <html dir="rtl" lang="ar">
@@ -859,7 +757,7 @@ def admin_products():
             body { background: #000; padding: 20px; }
             .header { background: #111; color: #FFD700; padding: 25px; border-radius: 15px; margin-bottom: 25px; box-shadow: 0 5px 15px rgba(255,215,0,0.2); border: 1px solid #FFD700; }
             .tabs { display: flex; background: #111; border-radius: 10px; overflow: hidden; margin-bottom: 20px; box-shadow: 0 3px 10px rgba(255,215,0,0.1); border: 1px solid #FFD700; }
-            .tab { flex: 1; padding: 15px; text-align: center; cursor: pointer; border-bottom: 3px solid transparent; color: #FFD700; transition: 0.3s; }
+            .tab { flex: 1; padding: 15px; text-align: center; cursor: pointer; border-bottom: 3px solid transparent; color: #FFD700; }
             .tab.active { background: #FFD700; color: #000; border-bottom: 3px solid #e6c200; }
             .content { display: none; background: #111; padding: 25px; border-radius: 15px; box-shadow: 0 5px 15px rgba(255,215,0,0.2); border: 1px solid #FFD700; color: #FFD700; }
             .content.active { display: block; }
@@ -887,18 +785,7 @@ def admin_products():
             .alert-error { background: #4d0000; color: #ff4d4d; border: 1px solid #ff4d4d; }
             .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; }
             .modal-content { background: #111; width: 90%; max-width: 500px; margin: 50px auto; padding: 30px; border-radius: 15px; border: 2px solid #FFD700; color: #FFD700; }
-            /* Pagination */
-            #pagination { margin-top: 20px; text-align: center; display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
-            .pagination-btn { background: #FFD700; color: #000; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; transition: 0.3s; font-weight: bold; }
-            .pagination-btn:hover { background: #e6c200; }
-            .pagination-btn.active { background: #000; color: #FFD700; border: 1px solid #FFD700; }
-            /* تحسينات الجوال */
-            @media (max-width: 768px) {
-                .tabs { flex-wrap: wrap; }
-                .tab { flex: auto; min-width: 120px; }
-                .form-grid { grid-template-columns: 1fr; }
-                table { display: block; overflow-x: auto; }
-            }
+            .product-image { width: 60px; height: 60px; object-fit: cover; border-radius: 8px; border: 1px solid #FFD700; cursor: pointer; }
         </style>
     </head>
     <body>
@@ -926,19 +813,18 @@ def admin_products():
         <!-- قائمة البضائع -->
         <div id="products" class="content">
             <div class="search-box">
-                <input type="text" id="search" placeholder="🔍 ابحث بالاسم أو الباركود..." onkeyup="loadProducts(1)" style="width: 300px; display: inline-block; margin-right: 10px; background:#000; color:#FFD700; border:1px solid #FFD700;">
-                <select id="filter-category" onchange="loadProducts(1)" style="width: 200px; display: inline-block; background:#000; color:#FFD700; border:1px solid #FFD700;">
+                <input type="text" id="search" placeholder="🔍 ابحث بالاسم أو الباركود..." onkeyup="loadProducts()" style="width: 300px; display: inline-block; margin-right: 10px; background:#000; color:#FFD700; border:1px solid #FFD700;">
+                <select id="filter-category" onchange="loadProducts()" style="width: 200px; display: inline-block; background:#000; color:#FFD700; border:1px solid #FFD700;">
                     <option value="">جميع الفئات</option>
                 </select>
             </div>
             <div id="products-list"></div>
-            <div id="pagination"></div>
         </div>
 
-        <!-- إضافة منتج -->
+        <!-- إضافة منتج (مع رفع صورة) -->
         <div id="add" class="content">
             <h2>➕ إضافة منتج جديد</h2>
-            <form id="add-product-form" onsubmit="return addProduct(event)">
+            <form id="add-product-form" onsubmit="return addProduct(event)" enctype="multipart/form-data">
                 <div class="form-grid">
                     <div class="form-group">
                         <label>الباركود *</label>
@@ -993,6 +879,10 @@ def admin_products():
                         <label>تاريخ الانتهاء</label>
                         <input type="date" id="expiry_date">
                     </div>
+                    <div class="form-group">
+                        <label>صورة المنتج</label>
+                        <input type="file" id="product_image" accept="image/*">
+                    </div>
                 </div>
                 <div style="text-align: left; margin-top: 20px;">
                     <button type="submit">💾 حفظ المنتج</button>
@@ -1007,11 +897,11 @@ def admin_products():
             <div id="inventory-logs"></div>
         </div>
 
-        <!-- Modal للتعديل -->
+        <!-- Modal للتعديل (مع إمكانية تغيير الصورة) -->
         <div id="editModal" class="modal">
             <div class="modal-content">
                 <h3>✏️ تعديل المنتج</h3>
-                <form id="edit-product-form">
+                <form id="edit-product-form" enctype="multipart/form-data">
                     <input type="hidden" id="edit-id">
                     <div class="form-grid">
                         <div class="form-group">
@@ -1026,6 +916,10 @@ def admin_products():
                             <label>الكمية</label>
                             <input type="number" id="edit-quantity" required>
                         </div>
+                        <div class="form-group">
+                            <label>تغيير الصورة (اختياري)</label>
+                            <input type="file" id="edit-image" accept="image/*">
+                        </div>
                     </div>
                     <div style="text-align: left; margin-top: 20px;">
                         <button type="submit">💾 حفظ التغييرات</button>
@@ -1035,12 +929,15 @@ def admin_products():
             </div>
         </div>
 
+        <!-- Modal لعرض الصورة مكبرة -->
+        <div id="imageModal" class="modal" style="display:none;" onclick="this.style.display='none'">
+            <div style="text-align:center; padding:20px;">
+                <img id="expandedImage" style="max-width:90%; max-height:90%; border:3px solid #FFD700; border-radius:10px;">
+            </div>
+        </div>
+
         <script>
             let currentTab = 'dashboard';
-            // متغيرات pagination
-            let currentPage = 1;
-            let totalPages = 1;
-            const productsPerPage = 20;
 
             function showTab(tabName) {
                 currentTab = tabName;
@@ -1055,7 +952,7 @@ def admin_products():
                 document.getElementById(tabName).classList.add('active');
 
                 if (tabName === 'dashboard') loadDashboard();
-                if (tabName === 'products') loadProducts(1);
+                if (tabName === 'products') loadProducts();
                 if (tabName === 'inventory') loadInventoryLogs();
             }
 
@@ -1110,11 +1007,11 @@ def admin_products():
                     });
             }
 
-            function loadProducts(page = 1) {
+            function loadProducts() {
                 const search = document.getElementById('search')?.value || '';
                 const category = document.getElementById('filter-category')?.value || '';
 
-                fetch(`/admin/products/list?search=${encodeURIComponent(search)}&category=${encodeURIComponent(category)}&page=${page}&per_page=${productsPerPage}`)
+                fetch(`/admin/products/list?search=${encodeURIComponent(search)}&category=${encodeURIComponent(category)}`)
                     .then(r => r.json())
                     .then(data => {
                         if (data.success) {
@@ -1122,6 +1019,7 @@ def admin_products():
                             html += `
                                 <thead>
                                     <tr>
+                                        <th>الصورة</th>
                                         <th>الباركود</th>
                                         <th>الاسم</th>
                                         <th>الفئة</th>
@@ -1138,9 +1036,13 @@ def admin_products():
                                 const value = product.price * product.quantity;
                                 const rowClass = product.quantity === 0 ? 'out-of-stock' : 
                                                 product.quantity <= product.min_quantity ? 'low-stock' : '';
+                                const imageHtml = product.image_path ? 
+                                    `<img src="/static/uploads/${product.image_path}" class="product-image" onclick="expandImage('/static/uploads/${product.image_path}')">` : 
+                                    '<div style="width:60px;height:60px; background:#333; border-radius:8px; display:flex; align-items:center; justify-content:center;">📦</div>';
 
                                 html += `
                                     <tr class="${rowClass}">
+                                        <td>${imageHtml}</td>
                                         <td>${product.barcode}</td>
                                         <td>${product.name}</td>
                                         <td>${product.category}</td>
@@ -1157,70 +1059,45 @@ def admin_products():
 
                             html += '</tbody></table>';
                             document.getElementById('products-list').innerHTML = html;
-
-                            // تحديث pagination
-                            currentPage = data.page;
-                            totalPages = data.total_pages;
-                            updatePagination();
                         }
                     });
             }
 
-            function updatePagination() {
-                const paginationDiv = document.getElementById('pagination');
-                if (totalPages <= 1) {
-                    paginationDiv.innerHTML = '';
-                    return;
-                }
-                
-                let html = '';
-                
-                if (currentPage > 1) {
-                    html += `<button class="pagination-btn" onclick="loadProducts(${currentPage - 1})">السابق</button>`;
-                }
-                
-                for (let i = 1; i <= totalPages; i++) {
-                    if (i === currentPage) {
-                        html += `<button class="pagination-btn active" style="background:#000; color:#FFD700; border:1px solid #FFD700;">${i}</button>`;
-                    } else {
-                        html += `<button class="pagination-btn" onclick="loadProducts(${i})">${i}</button>`;
-                    }
-                }
-                
-                if (currentPage < totalPages) {
-                    html += `<button class="pagination-btn" onclick="loadProducts(${currentPage + 1})">التالي</button>`;
-                }
-                
-                paginationDiv.innerHTML = html;
+            function expandImage(src) {
+                document.getElementById('expandedImage').src = src;
+                document.getElementById('imageModal').style.display = 'flex';
             }
 
             function addProduct(e) {
                 e.preventDefault();
 
-                const product = {
-                    barcode: document.getElementById('barcode').value,
-                    name: document.getElementById('name').value,
-                    category: document.getElementById('category').value,
-                    price: parseFloat(document.getElementById('price').value),
-                    cost_price: parseFloat(document.getElementById('cost_price').value) || 0,
-                    quantity: parseInt(document.getElementById('quantity').value),
-                    min_quantity: parseInt(document.getElementById('min_quantity').value) || 10,
-                    unit: document.getElementById('unit').value,
-                    supplier: document.getElementById('supplier').value,
-                    expiry_date: document.getElementById('expiry_date').value
-                };
+                const formData = new FormData();
+                formData.append('barcode', document.getElementById('barcode').value);
+                formData.append('name', document.getElementById('name').value);
+                formData.append('category', document.getElementById('category').value);
+                formData.append('price', document.getElementById('price').value);
+                formData.append('cost_price', document.getElementById('cost_price').value || 0);
+                formData.append('quantity', document.getElementById('quantity').value);
+                formData.append('min_quantity', document.getElementById('min_quantity').value || 10);
+                formData.append('unit', document.getElementById('unit').value);
+                formData.append('supplier', document.getElementById('supplier').value);
+                formData.append('expiry_date', document.getElementById('expiry_date').value);
+                
+                const imageFile = document.getElementById('product_image').files[0];
+                if (imageFile) {
+                    formData.append('image', imageFile);
+                }
 
                 fetch('/admin/products/add', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(product)
+                    body: formData
                 })
                 .then(r => r.json())
                 .then(data => {
                     if (data.success) {
                         alert('✅ تم إضافة المنتج بنجاح');
                         resetForm();
-                        loadProducts(1);
+                        loadProducts();
                         showTab('products');
                     } else {
                         alert('❌ ' + data.message);
@@ -1249,24 +1126,27 @@ def admin_products():
             document.getElementById('edit-product-form').onsubmit = function(e) {
                 e.preventDefault();
 
-                const product = {
-                    id: document.getElementById('edit-id').value,
-                    name: document.getElementById('edit-name').value,
-                    price: parseFloat(document.getElementById('edit-price').value),
-                    quantity: parseInt(document.getElementById('edit-quantity').value)
-                };
+                const formData = new FormData();
+                formData.append('id', document.getElementById('edit-id').value);
+                formData.append('name', document.getElementById('edit-name').value);
+                formData.append('price', document.getElementById('edit-price').value);
+                formData.append('quantity', document.getElementById('edit-quantity').value);
+                
+                const imageFile = document.getElementById('edit-image').files[0];
+                if (imageFile) {
+                    formData.append('image', imageFile);
+                }
 
                 fetch('/admin/products/update', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(product)
+                    body: formData
                 })
                 .then(r => r.json())
                 .then(data => {
                     if (data.success) {
                         alert('✅ تم تحديث المنتج بنجاح');
                         closeModal();
-                        loadProducts(currentPage);
+                        loadProducts();
                         loadDashboard();
                     } else {
                         alert('❌ ' + data.message);
@@ -1283,7 +1163,7 @@ def admin_products():
                     .then(data => {
                         if (data.success) {
                             alert('✅ تم حذف المنتج بنجاح');
-                            loadProducts(currentPage);
+                            loadProducts();
                             loadDashboard();
                         } else {
                             alert('❌ ' + data.message);
@@ -1455,35 +1335,18 @@ def products_stats():
 
 @app.route('/admin/products/list')
 def admin_products_list():
-    """قائمة البضائع للإدارة مع pagination"""
+    """قائمة البضائع للإدارة"""
     try:
         search = request.args.get('search', '')
         category = request.args.get('category', '')
-        page = int(request.args.get('page', 1))
-        per_page = int(request.args.get('per_page', 20))
-        offset = (page - 1) * per_page
 
         conn = get_db_connection()
         cur = conn.cursor()
 
         if DATABASE_URL:
-            # استعلام لحساب العدد الإجمالي
-            count_query = "SELECT COUNT(*) FROM products WHERE is_active = 1"
-            count_params = []
-            if search:
-                count_query += " AND (name LIKE %s OR barcode LIKE %s)"
-                count_params.append(f'%{search}%')
-                count_params.append(f'%{search}%')
-            if category:
-                count_query += " AND category = %s"
-                count_params.append(category)
-            cur.execute(count_query, count_params)
-            total_count = cur.fetchone()[0] or 0
-
-            # استعلام لجلب البيانات
             query = """
                 SELECT id, barcode, name, category, price, cost_price, quantity, 
-                       min_quantity, unit, supplier, expiry_date, added_date 
+                       min_quantity, unit, supplier, expiry_date, added_date, image_path
                 FROM products WHERE is_active = 1
             """
             params = []
@@ -1494,27 +1357,12 @@ def admin_products_list():
             if category:
                 query += " AND category = %s"
                 params.append(category)
-            query += " ORDER BY name LIMIT %s OFFSET %s"
-            params.append(per_page)
-            params.append(offset)
+            query += " ORDER BY name"
             cur.execute(query, params)
         else:
-            # SQLite
-            count_query = "SELECT COUNT(*) FROM products WHERE is_active = 1"
-            count_params = []
-            if search:
-                count_query += " AND (name LIKE ? OR barcode LIKE ?)"
-                count_params.append(f'%{search}%')
-                count_params.append(f'%{search}%')
-            if category:
-                count_query += " AND category = ?"
-                count_params.append(category)
-            cur.execute(count_query, count_params)
-            total_count = cur.fetchone()[0] or 0
-
             query = """
                 SELECT id, barcode, name, category, price, cost_price, quantity, 
-                       min_quantity, unit, supplier, expiry_date, added_date 
+                       min_quantity, unit, supplier, expiry_date, added_date, image_path
                 FROM products WHERE is_active = 1
             """
             params = []
@@ -1525,9 +1373,7 @@ def admin_products_list():
             if category:
                 query += " AND category = ?"
                 params.append(category)
-            query += " ORDER BY name LIMIT ? OFFSET ?"
-            params.append(per_page)
-            params.append(offset)
+            query += " ORDER BY name"
             cur.execute(query, params)
 
         products = []
@@ -1544,19 +1390,13 @@ def admin_products_list():
                 "unit": row[8],
                 "supplier": row[9],
                 "expiry_date": row[10],
-                "added_date": row[11]
+                "added_date": row[11],
+                "image_path": row[12]
             })
 
         cur.close()
         conn.close()
-        return jsonify({
-            "success": True,
-            "products": products,
-            "total": total_count,
-            "page": page,
-            "per_page": per_page,
-            "total_pages": (total_count + per_page - 1) // per_page if total_count > 0 else 0
-        })
+        return jsonify({"success": True, "products": products})
 
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
@@ -1585,23 +1425,44 @@ def product_categories():
 
 @app.route('/admin/products/add', methods=['POST'])
 def add_product():
-    """إضافة منتج جديد"""
+    """إضافة منتج جديد مع رفع صورة"""
     try:
-        data = request.json
+        # استلام البيانات من النموذج
+        barcode = request.form.get('barcode')
+        name = request.form.get('name')
+        category = request.form.get('category')
+        price = request.form.get('price')
+        cost_price = request.form.get('cost_price', 0)
+        quantity = request.form.get('quantity')
+        min_quantity = request.form.get('min_quantity', 10)
+        unit = request.form.get('unit')
+        supplier = request.form.get('supplier', '')
+        expiry_date = request.form.get('expiry_date', '')
 
-        required_fields = ['barcode', 'name', 'price', 'quantity']
-        for field in required_fields:
-            if not data.get(field):
-                return jsonify({"success": False, "message": f"حقل {field} مطلوب"})
+        # التحقق من الحقول المطلوبة
+        if not all([barcode, name, price, quantity]):
+            return jsonify({"success": False, "message": "جميع الحقول المطلوبة يجب ملؤها"})
+
+        # معالجة الصورة
+        image_file = request.files.get('image')
+        image_filename = None
+        if image_file and allowed_file(image_file.filename):
+            # تأمين اسم الملف
+            filename = secure_filename(image_file.filename)
+            # إضافة وقت لتجنب تكرار الأسماء
+            timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            image_filename = f"{timestamp}_{filename}"
+            # حفظ الملف
+            image_file.save(os.path.join(app.config['UPLOAD_FOLDER'], image_filename))
 
         conn = get_db_connection()
         cur = conn.cursor()
 
         # التحقق من عدم تكرار الباركود
         if DATABASE_URL:
-            cur.execute("SELECT id FROM products WHERE barcode = %s", (data['barcode'],))
+            cur.execute("SELECT id FROM products WHERE barcode = %s", (barcode,))
         else:
-            cur.execute("SELECT id FROM products WHERE barcode = ?", (data['barcode'],))
+            cur.execute("SELECT id FROM products WHERE barcode = ?", (barcode,))
 
         if cur.fetchone():
             cur.close()
@@ -1611,46 +1472,27 @@ def add_product():
         today = datetime.date.today().isoformat()
 
         if DATABASE_URL:
+            # استخدام RETURNING id للحصول على معرف المنتج في PostgreSQL
             cur.execute("""
                 INSERT INTO products (
                     barcode, name, category, price, cost_price, quantity, 
-                    min_quantity, unit, supplier, expiry_date, added_date, last_updated
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    min_quantity, unit, supplier, expiry_date, added_date, last_updated, image_path
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
-                data['barcode'],
-                data['name'],
-                data.get('category', 'مواد غذائية'),
-                float(data['price']),
-                float(data.get('cost_price', 0)),
-                int(data['quantity']),
-                int(data.get('min_quantity', 10)),
-                data.get('unit', 'قطعة'),
-                data.get('supplier', ''),
-                data.get('expiry_date', ''),
-                today,
-                today
+                barcode, name, category, float(price), float(cost_price), int(quantity),
+                int(min_quantity), unit, supplier, expiry_date, today, today, image_filename
             ))
             product_id = cur.fetchone()[0]
         else:
             cur.execute("""
                 INSERT INTO products (
                     barcode, name, category, price, cost_price, quantity, 
-                    min_quantity, unit, supplier, expiry_date, added_date, last_updated
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    min_quantity, unit, supplier, expiry_date, added_date, last_updated, image_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                data['barcode'],
-                data['name'],
-                data.get('category', 'مواد غذائية'),
-                float(data['price']),
-                float(data.get('cost_price', 0)),
-                int(data['quantity']),
-                int(data.get('min_quantity', 10)),
-                data.get('unit', 'قطعة'),
-                data.get('supplier', ''),
-                data.get('expiry_date', ''),
-                today,
-                today
+                barcode, name, category, float(price), float(cost_price), int(quantity),
+                int(min_quantity), unit, supplier, expiry_date, today, today, image_filename
             ))
             product_id = cur.lastrowid
 
@@ -1662,15 +1504,8 @@ def add_product():
                     old_quantity, new_quantity, notes, user, timestamp
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
-                product_id,
-                data['name'],
-                'إضافة',
-                int(data['quantity']),
-                0,
-                int(data['quantity']),
-                'إضافة منتج جديد',
-                'admin',
-                datetime.datetime.now().isoformat()
+                product_id, name, 'إضافة', int(quantity), 0, int(quantity),
+                'إضافة منتج جديد', 'admin', datetime.datetime.now().isoformat()
             ))
         else:
             cur.execute("""
@@ -1679,19 +1514,9 @@ def add_product():
                     old_quantity, new_quantity, notes, user, timestamp
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                product_id,
-                data['name'],
-                'إضافة',
-                int(data['quantity']),
-                0,
-                int(data['quantity']),
-                'إضافة منتج جديد',
-                'admin',
-                datetime.datetime.now().isoformat()
+                product_id, name, 'إضافة', int(quantity), 0, int(quantity),
+                'إضافة منتج جديد', 'admin', datetime.datetime.now().isoformat()
             ))
-
-        # تسجيل النشاط
-        log_user_activity('admin', 'إضافة منتج', 'product', product_id, f'تم إضافة منتج: {data["name"]}')
 
         conn.commit()
         cur.close()
@@ -1748,21 +1573,25 @@ def get_product(product_id):
 
 @app.route('/admin/products/update', methods=['POST'])
 def update_product():
-    """تحديث بيانات منتج"""
+    """تحديث بيانات منتج مع إمكانية تغيير الصورة"""
     try:
-        data = request.json
+        # استلام البيانات
+        product_id = request.form.get('id')
+        name = request.form.get('name')
+        price = request.form.get('price')
+        quantity = request.form.get('quantity')
 
-        if not data.get('id'):
-            return jsonify({"success": False, "message": "معرف المنتج مطلوب"})
+        if not all([product_id, name, price, quantity]):
+            return jsonify({"success": False, "message": "جميع الحقول المطلوبة يجب ملؤها"})
 
         conn = get_db_connection()
         cur = conn.cursor()
 
         # الحصول على البيانات الحالية
         if DATABASE_URL:
-            cur.execute("SELECT quantity, name FROM products WHERE id = %s", (data['id'],))
+            cur.execute("SELECT quantity, name, image_path FROM products WHERE id = %s", (product_id,))
         else:
-            cur.execute("SELECT quantity, name FROM products WHERE id = ?", (data['id'],))
+            cur.execute("SELECT quantity, name, image_path FROM products WHERE id = ?", (product_id,))
 
         current = cur.fetchone()
 
@@ -1773,34 +1602,39 @@ def update_product():
 
         old_quantity = current[0]
         product_name = current[1]
-        new_quantity = int(data.get('quantity', old_quantity))
+        old_image = current[2]
+        new_quantity = int(quantity)
         quantity_change = new_quantity - old_quantity
+
+        # معالجة الصورة الجديدة إذا وجدت
+        image_file = request.files.get('image')
+        image_filename = old_image  # الاحتفاظ بالصورة القديمة افتراضياً
+        if image_file and allowed_file(image_file.filename):
+            # تأمين اسم الملف الجديد
+            filename = secure_filename(image_file.filename)
+            timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            image_filename = f"{timestamp}_{filename}"
+            # حفظ الملف الجديد
+            image_file.save(os.path.join(app.config['UPLOAD_FOLDER'], image_filename))
+            # حذف الصورة القديمة إذا كانت موجودة
+            if old_image:
+                old_path = os.path.join(app.config['UPLOAD_FOLDER'], old_image)
+                if os.path.exists(old_path):
+                    os.remove(old_path)
 
         # تحديث المنتج
         if DATABASE_URL:
             cur.execute("""
                 UPDATE products 
-                SET name = %s, price = %s, quantity = %s, last_updated = %s
+                SET name = %s, price = %s, quantity = %s, last_updated = %s, image_path = %s
                 WHERE id = %s
-            """, (
-                data['name'],
-                float(data['price']),
-                new_quantity,
-                datetime.date.today().isoformat(),
-                data['id']
-            ))
+            """, (name, float(price), new_quantity, datetime.date.today().isoformat(), image_filename, product_id))
         else:
             cur.execute("""
                 UPDATE products 
-                SET name = ?, price = ?, quantity = ?, last_updated = ?
+                SET name = ?, price = ?, quantity = ?, last_updated = ?, image_path = ?
                 WHERE id = ?
-            """, (
-                data['name'],
-                float(data['price']),
-                new_quantity,
-                datetime.date.today().isoformat(),
-                data['id']
-            ))
+            """, (name, float(price), new_quantity, datetime.date.today().isoformat(), image_filename, product_id))
 
         # تسجيل حركة المخزون إذا تغيرت الكمية
         if quantity_change != 0:
@@ -1811,14 +1645,8 @@ def update_product():
                         old_quantity, new_quantity, notes, user, timestamp
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
-                    data['id'],
-                    product_name,
-                    'تعديل',
-                    quantity_change,
-                    old_quantity,
-                    new_quantity,
-                    'تعديل المنتج',
-                    'admin',
+                    product_id, product_name, 'تعديل', quantity_change,
+                    old_quantity, new_quantity, 'تعديل المنتج', 'admin',
                     datetime.datetime.now().isoformat()
                 ))
             else:
@@ -1828,19 +1656,10 @@ def update_product():
                         old_quantity, new_quantity, notes, user, timestamp
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    data['id'],
-                    product_name,
-                    'تعديل',
-                    quantity_change,
-                    old_quantity,
-                    new_quantity,
-                    'تعديل المنتج',
-                    'admin',
+                    product_id, product_name, 'تعديل', quantity_change,
+                    old_quantity, new_quantity, 'تعديل المنتج', 'admin',
                     datetime.datetime.now().isoformat()
                 ))
-
-        # تسجيل النشاط
-        log_user_activity('admin', 'تحديث منتج', 'product', data['id'], f'تم تحديث منتج: {data["name"]}')
 
         conn.commit()
         cur.close()
@@ -1861,9 +1680,9 @@ def delete_product(product_id):
 
         # الحصول على بيانات المنتج قبل الحذف
         if DATABASE_URL:
-            cur.execute("SELECT name, quantity FROM products WHERE id = %s", (product_id,))
+            cur.execute("SELECT name, quantity, image_path FROM products WHERE id = %s", (product_id,))
         else:
-            cur.execute("SELECT name, quantity FROM products WHERE id = ?", (product_id,))
+            cur.execute("SELECT name, quantity, image_path FROM products WHERE id = ?", (product_id,))
 
         product = cur.fetchone()
 
@@ -1871,6 +1690,12 @@ def delete_product(product_id):
             cur.close()
             conn.close()
             return jsonify({"success": False, "message": "المنتج غير موجود"})
+
+        # حذف الصورة من المجلد إذا وجدت
+        if product[2]:
+            image_path = os.path.join(app.config['UPLOAD_FOLDER'], product[2])
+            if os.path.exists(image_path):
+                os.remove(image_path)
 
         # حذف منطقي (تغيير الحالة)
         if DATABASE_URL:
@@ -1886,14 +1711,8 @@ def delete_product(product_id):
                     old_quantity, new_quantity, notes, user, timestamp
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
-                product_id,
-                product[0],
-                'حذف',
-                -product[1],
-                product[1],
-                0,
-                'حذف المنتج',
-                'admin',
+                product_id, product[0], 'حذف', -product[1],
+                product[1], 0, 'حذف المنتج', 'admin',
                 datetime.datetime.now().isoformat()
             ))
         else:
@@ -1903,19 +1722,10 @@ def delete_product(product_id):
                     old_quantity, new_quantity, notes, user, timestamp
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                product_id,
-                product[0],
-                'حذف',
-                -product[1],
-                product[1],
-                0,
-                'حذف المنتج',
-                'admin',
+                product_id, product[0], 'حذف', -product[1],
+                product[1], 0, 'حذف المنتج', 'admin',
                 datetime.datetime.now().isoformat()
             ))
-
-        # تسجيل النشاط
-        log_user_activity('admin', 'حذف منتج', 'product', product_id, f'تم حذف منتج: {product[0]}')
 
         conn.commit()
         cur.close()
@@ -2007,11 +1817,12 @@ def admin_dashboard():
         <div style="background: #111; padding: 20px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #FFD700; color: #FFD700;">
             <h3>المميزات:</h3>
             <ul style="list-style: none; padding-right: 20px;">
-                <li>• إدارة كاملة للبضائع (إضافة/تعديل/حذف)</li>
+                <li>• إدارة كاملة للبضائع (إضافة/تعديل/حذف) مع رفع الصور</li>
                 <li>• متابعة المخزون والتنبيهات</li>
                 <li>• حركات المخزون وتتبع التغيرات</li>
-                <li>• عرض البضائع للعملاء</li>
+                <li>• عرض البضائع للعملاء مع الصور</li>
                 <li>• نظام كامل لإدارة المتجر</li>
+                <li>• إرسال فواتير عبر واتساب مع بيانات العميل</li>
             </ul>
         </div>
 
@@ -2019,7 +1830,7 @@ def admin_dashboard():
             <div class="dashboard-card products" onclick="location.href='/admin/products'">
                 <div class="card-icon">📦</div>
                 <h2>إدارة البضائع</h2>
-                <p class="card-description">إضافة، تعديل، وحذف المنتجات، وإدارة المخزون</p>
+                <p class="card-description">إضافة، تعديل، وحذف المنتجات مع الصور، وإدارة المخزون</p>
             </div>
 
             <div class="dashboard-card customers" onclick="location.href='/admin/customers'">
@@ -2306,20 +2117,9 @@ def add_customer():
                     VALUES (?, ?, ?)
                 """, (phone, name, datetime.date.today().isoformat()))
 
-            # الحصول على id المضاف (طريقة مبسطة)
-            if DATABASE_URL:
-                cur.execute("SELECT lastval()")
-                customer_id = cur.fetchone()[0]
-            else:
-                customer_id = cur.lastrowid
-
             conn.commit()
             cur.close()
             conn.close()
-
-            # تسجيل النشاط
-            log_user_activity('admin', 'إضافة عميل', 'customer', customer_id, f'تم إضافة عميل: {name}')
-
             return jsonify({"success": True, "message": "✅ تم إضافة العميل بنجاح"})
         except Exception as e:
             if "unique" in str(e).lower() or "duplicate" in str(e).lower():
@@ -2330,18 +2130,6 @@ def add_customer():
         return jsonify({"success": False, "message": f"خطأ: {str(e)}"})
 
 
-# =============================== أفكار تطوير النظام ===============================
-# 1. إضافة نظام تسجيل دخول للمديرين (Admin Login) مع صلاحيات مختلفة.
-# 2. إضافة نظام فواتير (Invoicing) بحيث يمكن طباعة فاتورة بعد كل عملية بيع.
-# 3. إضافة تقارير متقدمة (مبيعات يومية/شهرية، أفضل المنتجات مبيعاً، العملاء الأكثر إنفاقاً).
-# 4. إمكانية مسح الباركود باستخدام كاميرا الهاتف (من واجهة العملاء).
-# 5. إضافة نظام تنبيهات عند انخفاض المخزون (إشعارات داخلية أو عبر البريد الإلكتروني).
-# 6. دعم متعدد اللغات (عربي/إنجليزي).
-# 7. إضافة نظام خصومات (Coupons) يمكن للعملاء استخدامها.
-# 8. إضافة إمكانية رفع صور للمنتجات.
-# 9. عمل تطبيق جوال (PWA) ليتم تثبيته على الهواتف.
-# 10. نظام إحالة (Referral) ومكافآت للعملاء الذين يجلبون عملاء جدد.
-
 # =============================== التشغيل الرئيسي ===============================
 if __name__ == '__main__':
     print("=" * 70)
@@ -2351,28 +2139,19 @@ if __name__ == '__main__':
     print("🌐 الروابط المتاحة:")
     print("   👉 http://localhost:5000/            (للعملاء - الرئيسية)")
     print("   👉 http://localhost:5000/admin       (للإدارة - لوحة التحكم)")
-    print("   👉 http://localhost:5000/admin/products (إدارة البضائع)")
+    print("   👉 http://localhost:5000/admin/products (إدارة البضائع مع رفع الصور)")
     print("   👉 http://localhost:5000/stats       (الإحصائيات)")
     print("   👉 http://localhost:5000/add         (إضافة عميل)")
     print("   👉 http://localhost:5000/admin/customers (قائمة العملاء)")
     print("=" * 70)
     print("📦 المميزات المضافة:")
-    print("   • إدارة كاملة للبضائع (إضافة/تعديل/حذف)")
+    print("   • إدارة كاملة للبضائع مع رفع الصور من الجهاز")
+    print("   • عرض الصور في واجهة العملاء والإدارة")
+    print("   • إرسال فواتير عبر واتساب مع اسم العميل ورقمه وعنوانه")
     print("   • متابعة المخزون والتنبيهات")
     print("   • حركات المخزون وتتبع التغيرات")
-    print("   • عرض البضائع للعملاء مع إضافة إلى السلة")
-    print("   • إرسال الطلب عبر واتساب إلى رقم المتجر: 967770295876")
-    print("   • نظام كامل لإدارة المتجر")
     print("=" * 70)
     print("🎨 تم تغيير ألوان الواجهات إلى الأسود والذهبي.")
-    print("✨ تحسينات المرحلة الأولى المضافة:")
-    print("   • تحسين استجابة الجوال (Responsive)")
-    print("   • إضافة Pagination للمنتجات")
-    print("   • إضافة فهارس لقاعدة البيانات لتحسين السرعة")
-    print("   • تسجيل أنشطة المستخدمين")
-    print("   • إضافة رسوم متحركة بسيطة")
-    print("=" * 70)
-    print("💡 أفكار للتطوير موجودة في نهاية الكود.")
     print("=" * 70)
     print("⏳ جاري التشغيل...")
     app.run(host='127.0.0.1', port=5000, debug=True)
