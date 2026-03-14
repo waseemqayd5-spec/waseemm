@@ -1,11 +1,27 @@
 {
-  "background_color": "#ffffff",
-  "dir": "ltr",
-  "display": "standalone",
-  "name": "Awlad Qaid Supermarket",
-  "orientation": "any",
-  "scope": "/",
-  "short_name": "waseemm-2.onrender",
+  "name": "Waseem Portfolio",
+  "short_name": "Waseem",
+  "description": "Portofolio of AI Engineering Specialist Wasim Al-Humaidi",
   "start_url": "/",
-  "theme_color": "#8b8677"
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#D4AF37",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/static/icons/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/icons/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["education", "portfolio", "business"],
+  "lang": "ar-SA",
+  "dir": "rtl"
 }
