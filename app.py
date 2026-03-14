@@ -60,6 +60,10 @@ def manifest():
 
 @app.route('/')
 def home():
+    @app.route('/manifest.json')
+def serve_manifest():
+    return send_from_directory('static', 'manifest.json')
+
     return render_template_string(html_template)
 
 if __name__ == '__main__':
