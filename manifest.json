@@ -1,23 +1,7 @@
-{
-  "name": "سوبر ماركت أولاد قايد",
-  "short_name": "أولاد قايد",
-  "start_url": "https://waseemm-2.onrender.com",
-  "display": "standalone",
-  "background_color": "#000000",
-  "theme_color": "#d4af37",
-  "orientation": "portrait",
-  "scope": "/",
-  "lang": "ar",
-  "icons": [
-    {
-      "src": "icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png"
-    },
-    {
-      "src": "icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png"
-    }
-  ]
-}
+self.addEventListener("install", function(event) {
+  console.log("Service Worker Installed");
+});
+
+self.addEventListener("fetch", function(event) {
+  event.respondWith(fetch(event.request));
+});
