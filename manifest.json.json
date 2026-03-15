@@ -1,0 +1,25 @@
+{
+  "name": "سوبر ماركت اولاد قايد محمد",
+  "short_name": "سوبر ماركت",
+  "description": "نظام نقاط العملاء وإدارة البضائع - سوبر ماركت اولاد قايتطبيق سوبر ماركت أولاد قايد محمد للتسوق وإدارة العروض والمنتجات بسهولة من الجوال.د محمد",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#FFD700",
+  "icons": [
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "id": "supermarket-awladqaid-2026",
+  "orientation": "portrait",
+  "dir": "rtl",
+  "lang": "ar"
+}
