@@ -1,22 +1,23 @@
 {
-  "name": "سوبر ماركت أولاد قايد",
-  "short_name": "أولاد قايد",
-  "description": "تسوق جميع المنتجات الغذائية والخضروات بأفضل الأسعار",
-  "start_url": "/",
-  "display": "standalone",
-  "background_color": "#000000",
-  "theme_color": "#d4af37",
-  "orientation": "portrait",
-  "icons": [
-    {
-      "src": "/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png"
-    },
-    {
-      "src": "/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png"
-    }
-  ]
+"id": "supermarket-awladqaid-2026",
+"name": "سوبر ماركت أولاد قايد",
+"short_name": "أولاد قايد",
+"description": "نظام نقاط العملاء وإدارة البضائع لسوبر ماركت اولاد قايد محمد",
+"start_url": "/",
+"display": "standalone",
+"orientation": "portrait",
+"background_color": "#000000",
+"theme_color": "#d4af37",
+"icons": [
+{
+"src": "/static/icon-192.png",
+"sizes": "192x192",
+"type": "image/png"
+},
+{
+"src": "/static/icon-512.png",
+"sizes": "512x512",
+"type": "image/png"
+}
+]
 }
