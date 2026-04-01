@@ -1716,7 +1716,7 @@ def create_order():
 
         # إرسال إشعار واتساب للعميل
         settings = get_settings()
-        whatsapp_number = settings.get('company_whatsapp', '967771602370')
+        company_name = settings.get('company_name', 'المتجر')
         message = f"تم استلام طلبك رقم {invoice_number} في {company_name}. سنقوم بتوصيله قريباً."
         send_whatsapp_notification(customer_phone, message)
 
@@ -1875,10 +1875,10 @@ def admin_products():
     <div id="logs" class="content"><div id="inventory-logs">جار التحميل...</div></div>
     <script>
         function showTab(tab){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));event.target.classList.add('active');document.querySelectorAll('.content').forEach(c=>c.classList.remove('active'));document.getElementById(tab).classList.add('active');if(tab=='list') loadProducts();if(tab=='logs') loadLogs();}
-        function loadProducts(){fetch('/admin/products/list').then(r=>r.json()).then(data=>{let html='<table><tr><th>الباركود</th><th>الاسم</th><th>الفئة</th><th>السعر</th><th>الكمية</th><th>الوحدة</th><th>إجراءات</th></tr>';data.products.forEach(p=>{html+=`<tr><td>${p.barcode}</td><td>${p.name}</td><td>${p.category}</td><td>${p.price}</td><td>${p.quantity}</td><td>${p.unit}</td><td><button onclick="editProduct(${p.id})">✏️</button><button onclick="deleteProduct(${p.id})">🗑️</button></td></tr>`;});html+='</table>';document.getElementById('products-list').innerHTML=html;});}
+        function loadProducts(){fetch('/admin/products/list').then(r=>r.json()).then(data=>{let html='<table border="1"><tr><th>الباركود</th><th>الاسم</th><th>الفئة</th><th>السعر</th><th>الكمية</th><th>الوحدة</th><th>إجراءات</th></tr>';data.products.forEach(p=>{html+=`<tr><td>${p.barcode}</td><td>${p.name}</td><td>${p.category}</td><td>${p.price}</td><td>${p.quantity}</td><td>${p.unit}</td><td><button onclick="editProduct(${p.id})">✏️</button><button onclick="deleteProduct(${p.id})">🗑️</button></td></tr>`;});html+='</table>';document.getElementById('products-list').innerHTML=html;});}
         function addProduct(e){e.preventDefault();alert('سيتم إضافة المنتج');}
         function deleteProduct(id){if(confirm('حذف المنتج؟')) fetch('/admin/products/delete/'+id,{method:'DELETE'}).then(r=>r.json()).then(d=>{alert(d.message);loadProducts();});}
-        function loadLogs(){fetch('/admin/products/logs').then(r=>r.json()).then(data=>{let html='<table><tr><th>المنتج</th><th>نوع الحركة</th><th>التغيير</th><th>التاريخ</th></tr>';data.logs.forEach(l=>{html+=`<tr><td>${l.product_name}</td><td>${l.change_type}</td><td>${l.quantity_change}</td><td>${l.timestamp}</td></tr>`;});html+='</table>';document.getElementById('inventory-logs').innerHTML=html;});}
+        function loadLogs(){fetch('/admin/products/logs').then(r=>r.json()).then(data=>{let html='<table border="1"><tr><th>المنتج</th><th>نوع الحركة</th><th>التغيير</th><th>التاريخ</th></tr>';data.logs.forEach(l=>{html+=`<tr><td>${l.product_name}</td><td>${l.change_type}</td><td>${l.quantity_change}</td><td>${l.timestamp}</td></tr>`;});html+='</table>';document.getElementById('inventory-logs').innerHTML=html;});}
         loadProducts();loadLogs();
     </script>
     </body>
@@ -1929,23 +1929,12 @@ def api_customer(phone):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# =============================== أفكار تطوير النظام ===============================
-# 1. إضافة نظام تسجيل دخول للمديرين (تم)
-# 2. إضافة نظام فواتير (PDF) (تم)
-# 3. إضافة تقارير متقدمة (يضاف)
-# 4. إمكانية مسح الباركود (تم)
-# 5. نظام تنبيهات (تم جزئياً مع واتساب)
-# 6. دعم متعدد اللغات (يضاف)
-# 7. نظام خصومات (تم مع الكوبونات)
-# 8. Pagination (يضاف)
-# 9. إضافة صور للمنتجات (تم)
-# 10. PWA (يضاف)
-
 # =============================== التشغيل الرئيسي ===============================
 if __name__ == '__main__':
     @app.route('/test')
-def test():
-    return "التطبيق يعمل بشكل صحيح!"
+    def test():
+        return "التطبيق يعمل بشكل صحيح!"
+
     print("=" * 70)
     print("🚀 نظام نقاط العملاء وإدارة البضائع - سوبر ماركت اولاد قايد محمد (نسخة متقدمة)")
     print("=" * 70)
