@@ -1,8 +1,8 @@
-flask
+Flask
 psycopg2-binary
 reportlab
 pywhatkit
 qrcode[pil]
-pyjwt
-werkzeug
-
+PyJWT
+Werkzeug
+gunicorn
