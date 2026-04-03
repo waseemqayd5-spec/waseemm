@@ -578,6 +578,7 @@ def home():
             <div class="header">
                 <h1>{{ company_logo }} {{ company_name }}</h1>
                 <p>نظام نقاط العملاء وإدارة المتجر</p>
+                <p>إعداد /م : وسيم الحميدي </p>
             </div>
             <div class="nav">
                 <a href="/" class="active">الرئيسية</a>
