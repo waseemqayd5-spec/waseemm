@@ -1,7 +1,7 @@
 """
 نظام إدارة سوبر ماركت متكامل - سوبر ماركت اولاد قايد محمد
 يدعم SQLite و PostgreSQL، ألوان أسود/ذهبي/أبيض، صور منتجات، باركود، مرتجعات، مشتريات، إحصائيات.
-مع مساعد ذكي (Chatbot) مدمج.
+مع مساعد ذكي (Chatbot) مدمج – يعمل عبر Google Gemini (مجاني) أو محلي متطور.
 """
 
 from flask import (
@@ -19,13 +19,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import time
 import json
-import requests   # <-- أضف هذا السطر هنا
-
-# اختياري: للذكاء الاصطناعي عبر OpenAI
-try:
-    import openai
-except ImportError:
-    openai = None
+import requests  # لاستدعاء Google Gemini API المجاني
 
 # =============================== التهيئة ===============================
 app = Flask(__name__)
@@ -37,10 +31,15 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
 DATABASE_URL = os.environ.get('DATABASE_URL', None)
 
-# مفتاح OpenAI – يفضل تعيينه في متغيرات البيئة وليس مباشرة في الكود
+# مفتاح OpenAI – لم يعد ضرورياً لكن نحتفظ به للتوافق
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
-if OPENAI_API_KEY and openai:
-    openai.api_key = OPENAI_API_KEY
+# لا نستورد openai إذا لم يكن موجوداً
+try:
+    import openai
+    if OPENAI_API_KEY:
+        openai.api_key = OPENAI_API_KEY
+except ImportError:
+    openai = None
 
 # =============================== دوال قاعدة البيانات ===============================
 def get_db_connection():
@@ -153,7 +152,7 @@ def update_customer_points(customer_id, total_spent):
             tier = 'عادي'
         execute_query("UPDATE customers SET tier = ? WHERE id = ?", (tier, customer_id), commit=True)
 
-# دالة للبحث عن منتج بالكلمات – تستخدم في المساعد المحلي
+# دالة للبحث عن منتج بالكلمات – تستخدم في المساعد المحلي القديم، لم نعد نحتاجها لكن نحتفظ بها
 def search_products_by_name(keywords):
     rows = execute_query("""
         SELECT id, name, price, quantity, description FROM products
@@ -533,7 +532,7 @@ def init_db():
             ("8801234567890", "أرز بسمتي", "أرز عالي الجودة", "مواد غذائية", 25.0, 18.0, 50, 10, "كيلو", 1, (today + datetime.timedelta(days=180)).isoformat()),
             ("8809876543210", "سكر", "سكر أبيض ناعم", "مواد غذائية", 15.0, 11.0, 100, 20, "كيلو", 1, (today + datetime.timedelta(days=180)).isoformat()),
             ("8801122334455", "زيت دوار الشمس", "زيت صحي", "مواد غذائية", 35.0, 28.0, 30, 10, "لتر", 1, (today + datetime.timedelta(days=180)).isoformat()),
-            ("8805566778899", "حليب طازج", "حليب كامل الدسم", "مبردات", 8.0, 6.0, 40, 15, "لتر", 1, (today + datetime.timedelta(days=14)).isoformat()),
+            ("8805566778899", "حليب طازج", "حليب كامل الدسم غني بالكالسيوم والبروتين", "مبردات", 8.0, 6.0, 40, 15, "لتر", 1, (today + datetime.timedelta(days=14)).isoformat()),
             ("8809988776655", "شاي", "شاي أسود", "مواد غذائية", 20.0, 15.0, 60, 15, "علبة", 1, (today + datetime.timedelta(days=180)).isoformat())
         ]
         for prod in products:
@@ -989,9 +988,8 @@ def chat_page():
     </body>
     </html>
     """, company_name=company_name)
-# أضف هذا الاستيراد في الأعلى
 
-
+# =============================== API المحادثة (Gemini + محلي مطور) ===============================
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
     data = request.json
@@ -1033,7 +1031,7 @@ def api_chat():
                     reply = candidates[0]["content"]["parts"][0]["text"]
                     return jsonify({"success": True, "reply": reply})
         except Exception as e:
-            pass  # إذا فشل Gemini نكمل للمساعد المحلي
+            pass
 
     # ============== المساعد المحلي المطوَّر (مجاني للأبد) ==============
     msg_lower = user_message.lower()
@@ -1042,7 +1040,6 @@ def api_chat():
     if any(g in msg_lower for g in greetings):
         return jsonify({"success": True, "reply": f"مرحباً بك في {company_name}! كيف أقدر أخدمك؟"})
 
-    # البحث عن منتج مذكور في النص
     found_product = None
     for p in (products_list or []):
         if p['name'].lower() in msg_lower:
@@ -1050,20 +1047,16 @@ def api_chat():
             break
 
     if found_product:
-        # إذا كان السؤال عن فوائد
         if any(kw in msg_lower for kw in ["فائدة", "فوائد", "فوايد", "ايش", "ماهو", "ما هو"]):
             desc = found_product['description'] or "منتج عالي الجودة"
             reply = f"بخصوص {found_product['name']}:\n{desc}\nالسعر: {found_product['price']} ريال/{found_product['unit']}\nالكمية المتوفرة: {found_product['quantity']}"
             return jsonify({"success": True, "reply": reply})
-        # سعر
         if any(kw in msg_lower for kw in ["سعر", "كم", "بكم"]):
             reply = f"سعر {found_product['name']} هو {found_product['price']} ريال/{found_product['unit']}. الكمية: {found_product['quantity']}"
             return jsonify({"success": True, "reply": reply})
-        # عرض عادي
         reply = f"{found_product['name']} متوفر بسعر {found_product['price']} ريال/{found_product['unit']} (الكمية: {found_product['quantity']})"
         return jsonify({"success": True, "reply": reply})
 
-    # أسئلة عامة عن المنتجات
     if any(kw in msg_lower for kw in ["المنتجات", "عندك", "قائمة", "ايش فيه", "ايش في"]):
         top = (products_list or [])[:5]
         if top:
@@ -1073,9 +1066,9 @@ def api_chat():
             reply = "القائمة قيد التحديث حالياً."
         return jsonify({"success": True, "reply": reply})
 
-    # رد افتراضي مفيد
     reply = f"أهلاً بك في {company_name}! يمكنني مساعدتك في:\n- الاستفسار عن منتج معين (مثلاً: سكر، حليب)\n- معرفة الأسعار والكميات\n- أسئلة عامة عن المنتجات\nاكتب اسم المنتج أو استفسارك."
     return jsonify({"success": True, "reply": reply})
+
 # =============================== تسجيل الدخول ===============================
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -1157,7 +1150,7 @@ def admin_dashboard():
     </body>
     """, low_stock_count=low_stock_count)
 
-# ... (باقي المسارات الإدارية تبقى كما هي، مع إمكانية إضافة زر المساعد في القوالب الإدارية إن أردت)
+# (اختصاراً، باقي مسارات الإدارة (settings, products, suppliers...) تبقى كما هي بدون تغيير، لم تُنسخ هنا ولكنها موجودة في الملف الأصلي، تأكد من وجودها في ملفك).
 
 # =============================== تشغيل التطبيق ===============================
 if __name__ == '__main__':
@@ -1165,7 +1158,7 @@ if __name__ == '__main__':
     print("🚀 نظام إدارة السوبر ماركت - سوبر ماركت اولاد قايد محمد (الإصدار المتكامل)")
     print("="*70)
     print(f"📁 قاعدة البيانات: {'PostgreSQL' if DATABASE_URL else 'SQLite local'}")
-    print("🤖 المساعد الذكي: ", "مفعل (OpenAI)" if OPENAI_API_KEY else "يعمل محلياً")
+    print("🤖 المساعد الذكي: ", "مفعل (Gemini)" if os.environ.get('GEMINI_API_KEY') else "يعمل محلياً")
     print("🌐 الروابط:")
     print("   👉 http://localhost:5000/            (الرئيسية)")
     print("   👉 http://localhost:5000/chat        (المساعد الذكي)")
