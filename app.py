@@ -19,6 +19,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import time
 import json
+import requests   # <-- أضف هذا السطر هنا
 
 # اختياري: للذكاء الاصطناعي عبر OpenAI
 try:
@@ -988,8 +989,9 @@ def chat_page():
     </body>
     </html>
     """, company_name=company_name)
+# أضف هذا الاستيراد في الأعلى
 
-# =============================== API المحادثة ===============================
+
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
     data = request.json
@@ -997,71 +999,83 @@ def api_chat():
     if not user_message:
         return jsonify({"success": False, "error": "رسالة فارغة"})
 
-    # جمع قائمة المنتجات النشطة لإعطائها كسياق
     products_list = execute_query("""
-        SELECT id, name, price, quantity, unit, category FROM products
-        WHERE is_active = 1
-        ORDER BY name
+        SELECT id, name, price, quantity, unit, category, description FROM products
+        WHERE is_active = 1 ORDER BY name
     """, fetch_all=True)
     products_text = "\n".join([
-        f"- {p['name']} ({p['category'] or 'عام'}) | السعر: {p['price']} ريال/{p['unit']} | الكمية: {p['quantity']}"
+        f"- {p['name']} ({p['category'] or 'عام'}) | السعر: {p['price']} ريال/{p['unit']} | الكمية: {p['quantity']} | الوصف: {p['description'] or ''}"
         for p in (products_list or [])
     ])
 
     company_name = get_settings().get('company_name', 'سوبر ماركت اولاد قايد محمد')
 
-    # محاولة استخدام OpenAI إذا كان المفتاح متاحاً
-    if OPENAI_API_KEY and openai:
+    # ============== تجربة Google Gemini أولاً (مجاني) ==============
+    gemini_key = os.environ.get('GEMINI_API_KEY', '')
+    if gemini_key:
         try:
-            messages = [
-                {"role": "system", "content": f"""أنت مساعد ودود في متجر '{company_name}'. تجيب بالعربية.
-                لديك قائمة المنتجات التالية (الاسم، الفئة، السعر، الوحدة، الكمية المتاحة):
-                {products_text}
-                إذا سأل العميل عن منتج غير موجود، أخبره بلطف أنه غير متوفر واقترح منتجات مشابهة إن أمكن.
-                ردودك قصيرة ومفيدة. ابدأ بتحية إذا كانت المحادثة جديدة."""},
-                {"role": "user", "content": user_message}
-            ]
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=messages,
-                temperature=0.7,
-                max_tokens=200
-            )
-            reply = response.choices[0].message.content.strip()
-            return jsonify({"success": True, "reply": reply})
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
+            system_prompt = f"""أنت مساعد ودود في متجر '{company_name}'. تجيب بالعربية فقط.
+            لديك قائمة المنتجات:
+            {products_text}
+            أجب عن أي سؤال يخص المنتجات، الأسعار، الفوائد العامة، العروض.
+            إذا سأل العميل عن منتج غير موجود، أخبره بلطف واقترح بدائل.
+            ردودك قصيرة ومفيدة. وإذا كانت التحية رد عليها بترحيب."""
+            payload = {
+                "contents": [
+                    {"role": "user", "parts": [{"text": system_prompt + "\nسؤال العميل: " + user_message}]}
+                ]
+            }
+            resp = requests.post(url, json=payload, timeout=10)
+            if resp.status_code == 200:
+                candidates = resp.json().get("candidates", [])
+                if candidates and candidates[0].get("content", {}).get("parts"):
+                    reply = candidates[0]["content"]["parts"][0]["text"]
+                    return jsonify({"success": True, "reply": reply})
         except Exception as e:
-            # إذا فشل الاتصال بـ OpenAI ننتقل للوضع المحلي
-            pass
+            pass  # إذا فشل Gemini نكمل للمساعد المحلي
 
-    # الوضع المحلي - بدون إنترنت أو AI خارجي
+    # ============== المساعد المحلي المطوَّر (مجاني للأبد) ==============
+    msg_lower = user_message.lower()
+
     greetings = ["مرحبا", "اهلا", "السلام", "صباح", "مساء", "hi", "hello"]
-    if any(g in user_message.lower() for g in greetings):
+    if any(g in msg_lower for g in greetings):
         return jsonify({"success": True, "reply": f"مرحباً بك في {company_name}! كيف أقدر أخدمك؟"})
 
-    # البحث عن اسم منتج مذكور حرفياً
-    found_products = []
+    # البحث عن منتج مذكور في النص
+    found_product = None
     for p in (products_list or []):
-        if p['name'].lower() in user_message.lower():
-            found_products.append(p)
-    if found_products:
-        reply_lines = []
-        for p in found_products:
-            reply_lines.append(f"• {p['name']} متوفر بسعر {p['price']} ريال/{p['unit']} (الكمية: {p['quantity']})")
-        reply = "المنتجات المتوفرة:\n" + "\n".join(reply_lines)
+        if p['name'].lower() in msg_lower:
+            found_product = p
+            break
+
+    if found_product:
+        # إذا كان السؤال عن فوائد
+        if any(kw in msg_lower for kw in ["فائدة", "فوائد", "فوايد", "ايش", "ماهو", "ما هو"]):
+            desc = found_product['description'] or "منتج عالي الجودة"
+            reply = f"بخصوص {found_product['name']}:\n{desc}\nالسعر: {found_product['price']} ريال/{found_product['unit']}\nالكمية المتوفرة: {found_product['quantity']}"
+            return jsonify({"success": True, "reply": reply})
+        # سعر
+        if any(kw in msg_lower for kw in ["سعر", "كم", "بكم"]):
+            reply = f"سعر {found_product['name']} هو {found_product['price']} ريال/{found_product['unit']}. الكمية: {found_product['quantity']}"
+            return jsonify({"success": True, "reply": reply})
+        # عرض عادي
+        reply = f"{found_product['name']} متوفر بسعر {found_product['price']} ريال/{found_product['unit']} (الكمية: {found_product['quantity']})"
         return jsonify({"success": True, "reply": reply})
 
-    # لا تطابق مباشر - نبحث عن كلمات مشتركة
-    words = user_message.split()
-    search_term = " ".join([w for w in words if len(w) > 2]) or user_message
-    similar = search_products_by_name(search_term)
-    if similar:
-        s_list = "\n".join([f"- {s['name']} ({s['price']} ريال)" for s in similar])
-        reply = f"لم أجد تطابقاً دقيقاً، لكن هذه منتجات قد تهمك:\n{s_list}"
-    else:
-        reply = f"عذراً، المنتج غير موجود حالياً في {company_name}. يمكنك سؤال الموظفين للمساعدة."
+    # أسئلة عامة عن المنتجات
+    if any(kw in msg_lower for kw in ["المنتجات", "عندك", "قائمة", "ايش فيه", "ايش في"]):
+        top = (products_list or [])[:5]
+        if top:
+            plist = "\n".join([f"- {p['name']} ({p['price']} ريال)" for p in top])
+            reply = f"لدينا منتجات متنوعة مثل:\n{plist}\nاسأل عن أي منتج لمزيد من التفاصيل."
+        else:
+            reply = "القائمة قيد التحديث حالياً."
+        return jsonify({"success": True, "reply": reply})
 
+    # رد افتراضي مفيد
+    reply = f"أهلاً بك في {company_name}! يمكنني مساعدتك في:\n- الاستفسار عن منتج معين (مثلاً: سكر، حليب)\n- معرفة الأسعار والكميات\n- أسئلة عامة عن المنتجات\nاكتب اسم المنتج أو استفسارك."
     return jsonify({"success": True, "reply": reply})
-
 # =============================== تسجيل الدخول ===============================
 @app.route('/login', methods=['GET', 'POST'])
 def login():
