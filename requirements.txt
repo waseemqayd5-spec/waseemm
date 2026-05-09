@@ -6,3 +6,5 @@ qrcode[pil]
 PyJWT
 Werkzeug
 gunicorn
+openai
+requests
