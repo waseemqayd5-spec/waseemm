@@ -1,10 +1,11 @@
 Flask
-psycopg2-binary
-reportlab
-pywhatkit
-qrcode[pil]
-PyJWT
-Werkzeug
-gunicorn
-openai
-requests
+psycopg2-binary        # إذا كنت تستخدم PostgreSQL
+reportlab              # لإنشاء PDF
+openpyxl               # لإنشاء Excel
+requests               # لاستدعاء Gemini API
+Werkzeug               # مدمج مع Flask لكن يمكن إضافته
+gunicorn               # لتشغيل التطبيق على Render
+openai                 # اختياري (إذا كنت تستخدم OpenAI)
+qrcode[pil]            # اختياري (لإنشاء QR)
+PyJWT                  # اختياري
+pywhatkit              # اختياري
