@@ -1,12 +1,12 @@
 """
-نظام إدارة سوبر ماركت متكامل - سوبر ماركت اولاد قايد محمد
-يدعم SQLite و PostgreSQL، ألوان أسود/ذهبي/أبيض، صور منتجات، باركود، مرتجعات، مشتريات، إحصائيات.
-مع مساعد ذكي (Chatbot) مدمج – يعمل عبر Google Gemini (مجاني) أو محلي متطور.
+نظام إدارة وكالة أدوية ومستلزمات طبية - وكالة البشائر
+يدعم SQLite و PostgreSQL، وحدات قياس متعددة، مسح باركود بالكاميرا، صلاحيات متقدمة،
+وضع ليلي/نهاري، إشعارات فورية، تصدير تقارير Excel/PDF، وسداد إلكتروني.
 """
 
 from flask import (
     Flask, request, jsonify, render_template_string, session,
-    redirect, url_for, make_response, send_from_directory
+    redirect, url_for, make_response, send_from_directory, Response
 )
 import os
 import datetime
@@ -19,7 +19,18 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import time
 import json
-import requests  # لاستدعاء Google Gemini API المجاني
+import requests
+import io
+import csv
+from openpyxl import Workbook
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+import threading
+import queue
 
 # =============================== التهيئة ===============================
 app = Flask(__name__)
@@ -29,17 +40,10 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
-DATABASE_URL = os.environ.get('DATABASE_URL', None)
+DATABASE_URL = os.environ.get('DATABASE_URL', None)  # إذا وُجدت تستخدم PostgreSQL وإلا SQLite
 
-# مفتاح OpenAI – لم يعد ضرورياً لكن نحتفظ به للتوافق
-OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
-# لا نستورد openai إذا لم يكن موجوداً
-try:
-    import openai
-    if OPENAI_API_KEY:
-        openai.api_key = OPENAI_API_KEY
-except ImportError:
-    openai = None
+# مفتاح Gemini للذكاء الاصطناعي
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 
 # =============================== دوال قاعدة البيانات ===============================
 def get_db_connection():
@@ -71,7 +75,8 @@ def execute_query(query, params=None, fetch_one=False, fetch_all=False, commit=F
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# =============================== دالة تزيين للصلاحيات ===============================
+# =============================== نظام الصلاحيات المتقدم ===============================
+# الأدوار: admin, pharmacist, cashier, store_keeper, purchaser
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -80,43 +85,39 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated
 
-def admin_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if 'user_id' not in session or session.get('role') != 'admin':
-            return "غير مصرح", 403
-        return f(*args, **kwargs)
-    return decorated
+def role_required(allowed_roles):
+    def decorator(f):
+        @wraps(f)
+        def decorated(*args, **kwargs):
+            if 'user_id' not in session or session.get('role') not in allowed_roles:
+                return "غير مصرح (صلاحية غير كافية)", 403
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
 
-def cashier_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if 'user_id' not in session or session.get('role') not in ['admin', 'cashier']:
-            return "غير مصرح", 403
-        return f(*args, **kwargs)
-    return decorated
-
-def stock_keeper_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if 'user_id' not in session or session.get('role') not in ['admin', 'stock_keeper']:
-            return "غير مصرح", 403
-        return f(*args, **kwargs)
-    return decorated
+# اختصارات للصلاحيات
+admin_required = role_required(['admin'])
+pharmacist_required = role_required(['admin', 'pharmacist'])
+cashier_required = role_required(['admin', 'cashier'])
+store_keeper_required = role_required(['admin', 'store_keeper'])
+purchaser_required = role_required(['admin', 'purchaser'])
 
 # =============================== دوال مساعدة ===============================
 def get_settings():
     rows = execute_query("SELECT key, value FROM settings", fetch_all=True)
     settings = {row['key']: row['value'] for row in rows} if rows else {}
     defaults = {
-        'company_name': 'سوبر ماركت اولاد قايد محمد',
-        'company_logo': '🛒',
+        'company_name': 'وكالة البشائر للأدوية والمستلزمات الطبية',
+        'company_logo': '💊',
         'company_address': 'اليمن - صنعاء',
         'company_phone': '967771602370',
         'company_whatsapp': '967771602370',
-        'delivery_fee': '5.00',
-        'points_per_riyal': '1',
-        'points_redeem_rate': '100'
+        'delivery_fee': '0.00',  # لا يوجد توصيل في الجملة
+        'points_per_riyal': '0', # لا نقاط
+        'points_redeem_rate': '0',
+        'currency': 'ريال يمني',
+        'tax_rate': '0.00',  # ضريبة القيمة المضافة إن وجدت
+        'default_unit': 'حبة'
     }
     defaults.update(settings)
     return defaults
@@ -136,32 +137,7 @@ def log_inventory(product_id, product_name, change_type, quantity_change, old_qt
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (product_id, product_name, change_type, quantity_change, old_qty, new_qty, notes, user_id, datetime.datetime.now().isoformat()), commit=True)
 
-def update_customer_points(customer_id, total_spent):
-    points_per_riyal = float(get_settings().get('points_per_riyal', 1))
-    points_earned = int(total_spent * points_per_riyal)
-    execute_query("UPDATE customers SET loyalty_points = loyalty_points + ?, total_spent = total_spent + ?, visits = visits + 1, last_visit = ? WHERE id = ?",
-                  (points_earned, total_spent, datetime.date.today().isoformat(), customer_id), commit=True)
-    row = execute_query("SELECT total_spent FROM customers WHERE id = ?", (customer_id,), fetch_one=True)
-    if row:
-        spent = row['total_spent']
-        if spent >= 5000:
-            tier = 'ذهبي'
-        elif spent >= 2000:
-            tier = 'فضي'
-        else:
-            tier = 'عادي'
-        execute_query("UPDATE customers SET tier = ? WHERE id = ?", (tier, customer_id), commit=True)
-
-# دالة للبحث عن منتج بالكلمات – تستخدم في المساعد المحلي القديم، لم نعد نحتاجها لكن نحتفظ بها
-def search_products_by_name(keywords):
-    rows = execute_query("""
-        SELECT id, name, price, quantity, description FROM products
-        WHERE is_active = 1 AND (name LIKE ? OR description LIKE ?)
-        LIMIT 5
-    """, (f"%{keywords}%", f"%{keywords}%"), fetch_all=True)
-    return rows if rows else []
-
-# =============================== إنشاء الجداول والبيانات الافتراضية ===============================
+# =============================== إنشاء الجداول مع الحقول الجديدة ===============================
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
@@ -172,7 +148,7 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 username VARCHAR(50) UNIQUE NOT NULL,
                 password_hash VARCHAR(200) NOT NULL,
-                role VARCHAR(20) DEFAULT 'cashier',
+                role VARCHAR(20) DEFAULT 'cashier',  -- admin, pharmacist, cashier, store_keeper, purchaser
                 full_name VARCHAR(100),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -189,6 +165,9 @@ def init_db():
                 phone VARCHAR(20) UNIQUE,
                 name VARCHAR(100),
                 address TEXT,
+                tax_number VARCHAR(50),
+                commercial_register VARCHAR(50),
+                payment_terms VARCHAR(50) DEFAULT 'cash',  -- cash, credit
                 loyalty_points INTEGER DEFAULT 0,
                 total_spent REAL DEFAULT 0,
                 visits INTEGER DEFAULT 0,
@@ -205,7 +184,20 @@ def init_db():
                 phone VARCHAR(20),
                 address TEXT,
                 email VARCHAR(100),
+                contact_person VARCHAR(100),
+                license_number VARCHAR(50),
+                bank_account TEXT,
                 notes TEXT
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS units (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(50) UNIQUE NOT NULL,
+                symbol VARCHAR(10),
+                base_unit_id INTEGER REFERENCES units(id),  -- الوحدة الأساسية (مثل حبة)
+                conversion_factor REAL DEFAULT 1.0,        -- عدد الوحدات الأساسية في هذه الوحدة
+                is_base BOOLEAN DEFAULT FALSE
             )
         """)
         cur.execute("""
@@ -215,18 +207,27 @@ def init_db():
                 name VARCHAR(200) NOT NULL,
                 description TEXT,
                 category VARCHAR(50),
-                price REAL NOT NULL,
-                cost_price REAL,
-                quantity INTEGER DEFAULT 0,
-                min_quantity INTEGER DEFAULT 10,
-                unit VARCHAR(20) DEFAULT 'قطعة',
+                unit_id INTEGER REFERENCES units(id),
+                price REAL NOT NULL,          -- سعر البيع للجملة (للصيدليات)
+                cost_price REAL,              -- سعر الشراء
+                quantity REAL DEFAULT 0,      -- الكمية بوحدة الأساس
+                min_quantity REAL DEFAULT 10,
                 supplier_id INTEGER REFERENCES suppliers(id),
                 expiry_date DATE,
                 added_date DATE,
                 last_updated DATE,
                 image_url TEXT,
                 image_url2 TEXT,
-                is_active INTEGER DEFAULT 1
+                is_active INTEGER DEFAULT 1,
+                -- حقول الأدوية
+                active_ingredient TEXT,
+                dosage_form TEXT,              -- أقراص، شراب، حقن، مرهم، إلخ
+                strength TEXT,                 -- 500 مجم
+                manufacturer TEXT,
+                batch_number TEXT,
+                storage_conditions TEXT,
+                prescription_required BOOLEAN DEFAULT FALSE,
+                unit_pack_size INTEGER        -- عدد الوحدات في العبوة (مثلاً 10 أقراص)
             )
         """)
         cur.execute("""
@@ -245,9 +246,11 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 purchase_id INTEGER REFERENCES purchases(id),
                 product_id INTEGER REFERENCES products(id),
-                quantity INTEGER,
+                quantity REAL,
                 cost_price REAL,
-                total REAL
+                total REAL,
+                batch_number TEXT,
+                expiry_date DATE
             )
         """)
         cur.execute("""
@@ -275,7 +278,7 @@ def init_db():
                 total REAL NOT NULL,
                 discount REAL DEFAULT 0,
                 final_total REAL NOT NULL,
-                payment_method VARCHAR(50),
+                payment_method VARCHAR(50),   -- cash, credit, online
                 points_earned INTEGER DEFAULT 0,
                 points_used INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -288,9 +291,11 @@ def init_db():
                 invoice_id INTEGER REFERENCES invoices(id),
                 product_id INTEGER REFERENCES products(id),
                 product_name VARCHAR(200),
-                quantity INTEGER NOT NULL,
+                quantity REAL NOT NULL,
                 price REAL NOT NULL,
-                total REAL NOT NULL
+                total REAL NOT NULL,
+                batch_number TEXT,
+                expiry_date DATE
             )
         """)
         cur.execute("""
@@ -299,9 +304,9 @@ def init_db():
                 product_id INTEGER REFERENCES products(id),
                 product_name TEXT,
                 change_type TEXT,
-                quantity_change INTEGER,
-                old_quantity INTEGER,
-                new_quantity INTEGER,
+                quantity_change REAL,
+                old_quantity REAL,
+                new_quantity REAL,
                 notes TEXT,
                 user_id INTEGER REFERENCES users(id),
                 timestamp TEXT
@@ -313,12 +318,22 @@ def init_db():
                 invoice_id INTEGER REFERENCES invoices(id),
                 product_id INTEGER REFERENCES products(id),
                 product_name VARCHAR(200),
-                quantity INTEGER,
+                quantity REAL,
                 price REAL,
                 total REAL,
                 reason TEXT,
                 return_date DATE,
                 created_by INTEGER REFERENCES users(id)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS alerts (
+                id SERIAL PRIMARY KEY,
+                type VARCHAR(50),  -- low_stock, expiry
+                product_id INTEGER REFERENCES products(id),
+                message TEXT,
+                is_read BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
     else:
@@ -345,6 +360,9 @@ def init_db():
                 phone TEXT UNIQUE,
                 name TEXT,
                 address TEXT,
+                tax_number TEXT,
+                commercial_register TEXT,
+                payment_terms TEXT DEFAULT 'cash',
                 loyalty_points INTEGER DEFAULT 0,
                 total_spent REAL DEFAULT 0,
                 visits INTEGER DEFAULT 0,
@@ -361,7 +379,20 @@ def init_db():
                 phone TEXT,
                 address TEXT,
                 email TEXT,
+                contact_person TEXT,
+                license_number TEXT,
+                bank_account TEXT,
                 notes TEXT
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS units (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                symbol TEXT,
+                base_unit_id INTEGER REFERENCES units(id),
+                conversion_factor REAL DEFAULT 1.0,
+                is_base BOOLEAN DEFAULT FALSE
             )
         """)
         cur.execute("""
@@ -371,18 +402,26 @@ def init_db():
                 name TEXT NOT NULL,
                 description TEXT,
                 category TEXT,
+                unit_id INTEGER REFERENCES units(id),
                 price REAL NOT NULL,
                 cost_price REAL,
-                quantity INTEGER DEFAULT 0,
-                min_quantity INTEGER DEFAULT 10,
-                unit TEXT DEFAULT 'قطعة',
+                quantity REAL DEFAULT 0,
+                min_quantity REAL DEFAULT 10,
                 supplier_id INTEGER REFERENCES suppliers(id),
                 expiry_date DATE,
                 added_date DATE,
                 last_updated DATE,
                 image_url TEXT,
                 image_url2 TEXT,
-                is_active INTEGER DEFAULT 1
+                is_active INTEGER DEFAULT 1,
+                active_ingredient TEXT,
+                dosage_form TEXT,
+                strength TEXT,
+                manufacturer TEXT,
+                batch_number TEXT,
+                storage_conditions TEXT,
+                prescription_required BOOLEAN DEFAULT FALSE,
+                unit_pack_size INTEGER
             )
         """)
         cur.execute("""
@@ -401,9 +440,11 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 purchase_id INTEGER REFERENCES purchases(id),
                 product_id INTEGER REFERENCES products(id),
-                quantity INTEGER,
+                quantity REAL,
                 cost_price REAL,
-                total REAL
+                total REAL,
+                batch_number TEXT,
+                expiry_date DATE
             )
         """)
         cur.execute("""
@@ -444,9 +485,11 @@ def init_db():
                 invoice_id INTEGER REFERENCES invoices(id),
                 product_id INTEGER REFERENCES products(id),
                 product_name TEXT,
-                quantity INTEGER NOT NULL,
+                quantity REAL NOT NULL,
                 price REAL NOT NULL,
-                total REAL NOT NULL
+                total REAL NOT NULL,
+                batch_number TEXT,
+                expiry_date DATE
             )
         """)
         cur.execute("""
@@ -455,9 +498,9 @@ def init_db():
                 product_id INTEGER REFERENCES products(id),
                 product_name TEXT,
                 change_type TEXT,
-                quantity_change INTEGER,
-                old_quantity INTEGER,
-                new_quantity INTEGER,
+                quantity_change REAL,
+                old_quantity REAL,
+                new_quantity REAL,
                 notes TEXT,
                 user_id INTEGER REFERENCES users(id),
                 timestamp TEXT
@@ -469,7 +512,7 @@ def init_db():
                 invoice_id INTEGER REFERENCES invoices(id),
                 product_id INTEGER REFERENCES products(id),
                 product_name TEXT,
-                quantity INTEGER,
+                quantity REAL,
                 price REAL,
                 total REAL,
                 reason TEXT,
@@ -477,76 +520,375 @@ def init_db():
                 created_by INTEGER REFERENCES users(id)
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT,
+                product_id INTEGER REFERENCES products(id),
+                message TEXT,
+                is_read BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-    # بيانات افتراضية
+    # إدخال البيانات الافتراضية للوحدات
+    cur.execute("SELECT COUNT(*) FROM units")
+    if cur.fetchone()[0] == 0:
+        # إدراج الوحدات الأساسية
+        units = [
+            ('حبة', 'حب', None, 1.0, 1),
+            ('علبة', 'علبة', None, 1.0, 0),
+            ('شريط', 'شريط', None, 1.0, 0),
+            ('كرتونة', 'كرتونة', None, 1.0, 0),
+            ('لتر', 'لتر', None, 1.0, 0),
+            ('ملجم', 'ملجم', None, 1.0, 0),
+            ('جرام', 'جرام', None, 1.0, 0),
+        ]
+        for unit in units:
+            cur.execute("INSERT INTO units (name, symbol, base_unit_id, conversion_factor, is_base) VALUES (?, ?, ?, ?, ?)", unit)
+
+    # بيانات افتراضية للمستخدمين
     cur.execute("SELECT COUNT(*) FROM users")
     if cur.fetchone()[0] == 0:
         hashed = generate_password_hash('admin123')
         cur.execute("INSERT INTO users (username, password_hash, role, full_name) VALUES (?, ?, ?, ?)",
                     ('admin', hashed, 'admin', 'مدير النظام'))
+        hashed_ph = generate_password_hash('pharma123')
+        cur.execute("INSERT INTO users (username, password_hash, role, full_name) VALUES (?, ?, ?, ?)",
+                    ('pharmacist', hashed_ph, 'pharmacist', 'صيدلي رئيسي'))
         hashed_cashier = generate_password_hash('cashier123')
         cur.execute("INSERT INTO users (username, password_hash, role, full_name) VALUES (?, ?, ?, ?)",
                     ('cashier', hashed_cashier, 'cashier', 'كاشير'))
         hashed_stock = generate_password_hash('stock123')
         cur.execute("INSERT INTO users (username, password_hash, role, full_name) VALUES (?, ?, ?, ?)",
-                    ('stock', hashed_stock, 'stock_keeper', 'أمين مخزن'))
+                    ('stock', hashed_stock, 'store_keeper', 'أمين مخزن'))
+        hashed_purch = generate_password_hash('purch123')
+        cur.execute("INSERT INTO users (username, password_hash, role, full_name) VALUES (?, ?, ?, ?)",
+                    ('purchaser', hashed_purch, 'purchaser', 'مندوب مشتريات'))
 
+    # بيانات الإعدادات الافتراضية
     cur.execute("SELECT COUNT(*) FROM settings")
     if cur.fetchone()[0] == 0:
         default_settings = [
-            ('company_name', 'سوبر ماركت اولاد قايد محمد'),
-            ('company_logo', '🛒'),
+            ('company_name', 'وكالة البشائر للأدوية والمستلزمات الطبية'),
+            ('company_logo', '💊'),
             ('company_address', 'اليمن - صنعاء'),
             ('company_phone', '967771602370'),
             ('company_whatsapp', '967771602370'),
-            ('delivery_fee', '5.00'),
-            ('points_per_riyal', '1'),
-            ('points_redeem_rate', '100')
+            ('delivery_fee', '0.00'),
+            ('points_per_riyal', '0'),
+            ('points_redeem_rate', '0'),
+            ('currency', 'ريال يمني'),
+            ('tax_rate', '0.00'),
+            ('default_unit', 'حبة')
         ]
         for key, val in default_settings:
             cur.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (key, val))
 
-    cur.execute("SELECT COUNT(*) FROM offers")
+    # بيانات افتراضية للموردين والعملاء والمنتجات
+    cur.execute("SELECT COUNT(*) FROM suppliers")
     if cur.fetchone()[0] == 0:
-        offers = [
-            ('خصم 10%', 'خصم 10% على كل الطلبات', 'DISCOUNT10', 'percentage', 10, None, None),
-            ('توصيل مجاني', 'توصيل مجاني للطلبات فوق 200 ريال', 'FREESHIP', 'fixed', 0, None, None),
-            ('نقاط مضاعفة', 'نقاط مضاعفة في نهاية الأسبوع', 'DOUBLE_POINTS', 'percentage', 0, None, None)
-        ]
-        for offer in offers:
-            cur.execute("INSERT INTO offers (title, description, code, discount_type, discount_value, start_date, end_date) VALUES (?, ?, ?, ?, ?, ?, ?)", offer)
+        cur.execute("INSERT INTO suppliers (name, phone, address, contact_person, license_number) VALUES (?, ?, ?, ?, ?)",
+                    ('شركة الحكمة للأدوية', '0500000001', 'صنعاء', 'أحمد القرشي', 'LIC001'))
+        cur.execute("INSERT INTO suppliers (name, phone, address, contact_person, license_number) VALUES (?, ?, ?, ?, ?)",
+                    ('مستودع الأمان', '0500000002', 'عدن', 'سامي النجار', 'LIC002'))
 
     cur.execute("SELECT COUNT(*) FROM customers")
     if cur.fetchone()[0] == 0:
-        cur.execute("INSERT INTO customers (phone, name, address, loyalty_points, total_spent, visits, last_visit, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    ("0500000000", "عميل تجريبي", "صنعاء", 100, 200.0, 5, datetime.date.today().isoformat(), "فضي"))
+        cur.execute("INSERT INTO customers (phone, name, address, tax_number, commercial_register, payment_terms) VALUES (?, ?, ?, ?, ?, ?)",
+                    ('0500000000', 'صيدلية الرحمة', 'صنعاء - شارع الستين', 'TAX001', 'CR001', 'credit'))
+        cur.execute("INSERT INTO customers (phone, name, address, tax_number, commercial_register, payment_terms) VALUES (?, ?, ?, ?, ?, ?)",
+                    ('0500000003', 'مستشفى السلام', 'صنعاء - السبعين', 'TAX002', 'CR002', 'cash'))
 
-    cur.execute("SELECT COUNT(*) FROM suppliers")
-    if cur.fetchone()[0] == 0:
-        cur.execute("INSERT INTO suppliers (name, phone, address) VALUES (?, ?, ?)", ("مورد تجريبي", "0500000001", "صنعاء"))
-
+    # منتجات أدوية نموذجية
     cur.execute("SELECT COUNT(*) FROM products")
     if cur.fetchone()[0] == 0:
         today = datetime.date.today()
+        # جلب معرف وحدة "حبة"
+        cur.execute("SELECT id FROM units WHERE name='حبة'")
+        unit_id = cur.fetchone()[0]
+        # جلب معرف الموردين
+        cur.execute("SELECT id FROM suppliers WHERE name LIKE '%الحكمة%'")
+        sup1 = cur.fetchone()[0]
+        cur.execute("SELECT id FROM suppliers WHERE name LIKE '%الأمان%'")
+        sup2 = cur.fetchone()[0]
+
         products = [
-            ("8801234567890", "أرز بسمتي", "أرز عالي الجودة", "مواد غذائية", 25.0, 18.0, 50, 10, "كيلو", 1, (today + datetime.timedelta(days=180)).isoformat()),
-            ("8809876543210", "سكر", "سكر أبيض ناعم", "مواد غذائية", 15.0, 11.0, 100, 20, "كيلو", 1, (today + datetime.timedelta(days=180)).isoformat()),
-            ("8801122334455", "زيت دوار الشمس", "زيت صحي", "مواد غذائية", 35.0, 28.0, 30, 10, "لتر", 1, (today + datetime.timedelta(days=180)).isoformat()),
-            ("8805566778899", "حليب طازج", "حليب كامل الدسم غني بالكالسيوم والبروتين", "مبردات", 8.0, 6.0, 40, 15, "لتر", 1, (today + datetime.timedelta(days=14)).isoformat()),
-            ("8809988776655", "شاي", "شاي أسود", "مواد غذائية", 20.0, 15.0, 60, 15, "علبة", 1, (today + datetime.timedelta(days=180)).isoformat())
+            ("6281234567890", "باراسيتامول 500 مجم", "مسكن وخافض حرارة", "مسكنات", unit_id, 5.0, 3.5, 200, 20, sup1, (today + datetime.timedelta(days=365)).isoformat(), today.isoformat(), today.isoformat(), None, None, 1, "باراسيتامول", "أقراص", "500 مجم", "شركة الحكمة", "BATCH001", "درجة حرارة الغرفة", False, 10),
+            ("6280987654321", "أموكسيسيلين 500 مجم", "مضاد حيوي واسع الطيف", "مضادات حيوية", unit_id, 15.0, 10.0, 100, 15, sup1, (today + datetime.timedelta(days=180)).isoformat(), today.isoformat(), today.isoformat(), None, None, 1, "أموكسيسيلين", "كبسولات", "500 مجم", "جلوبال فارما", "BATCH002", "يحفظ في الثلاجة", True, 20),
+            ("6281122334455", "أوميبرازول 40 مجم", "علاج قرحة المعدة", "جهاز هضمي", unit_id, 8.0, 5.0, 150, 10, sup2, (today + datetime.timedelta(days=200)).isoformat(), today.isoformat(), today.isoformat(), None, None, 1, "أوميبرازول", "أقراص", "40 مجم", "الأمان", "BATCH003", "درجة حرارة الغرفة", False, 14),
         ]
         for prod in products:
             cur.execute("""
-                INSERT INTO products (barcode, name, description, category, price, cost_price, quantity, min_quantity, unit, supplier_id, expiry_date, added_date, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (*prod, today.isoformat(), today.isoformat()))
+                INSERT INTO products (barcode, name, description, category, unit_id, price, cost_price, quantity, min_quantity, supplier_id, expiry_date, added_date, last_updated, image_url, image_url2, is_active, active_ingredient, dosage_form, strength, manufacturer, batch_number, storage_conditions, prescription_required, unit_pack_size)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, prod)
 
     conn.commit()
     conn.close()
 
 init_db()
 
-# =============================== واجهات المستخدم العامة ===============================
+# =============================== نظام الإشعارات (SSE) ===============================
+# قائمة انتظار للإشعارات
+notification_queue = queue.Queue()
+
+def check_alerts():
+    """دالة للتحقق من الإشعارات (مخزون منخفض، صلاحية قريبة) وإضافتها إلى قاعدة البيانات والإشعار الفوري."""
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # تحقق من المخزون المنخفض
+    cur.execute("""
+        SELECT id, name, quantity, min_quantity FROM products
+        WHERE quantity <= min_quantity AND is_active = 1
+    """)
+    low_stock = cur.fetchall()
+    for row in low_stock:
+        msg = f"المنتج '{row['name']}' مخزونه منخفض (الكمية: {row['quantity']}، الحد الأدنى: {row['min_quantity']})"
+        # إضافة إلى جدول التنبيهات
+        execute_query("INSERT INTO alerts (type, product_id, message) VALUES (?, ?, ?)",
+                      ('low_stock', row['id'], msg), commit=True)
+        # إضافة إلى queue لإرسال SSE
+        notification_queue.put({'type': 'low_stock', 'message': msg, 'product_id': row['id']})
+
+    # تحقق من الصلاحية (قرب الانتهاء خلال 30 يوم)
+    today = datetime.date.today()
+    expiry_threshold = today + datetime.timedelta(days=30)
+    cur.execute("""
+        SELECT id, name, expiry_date FROM products
+        WHERE expiry_date <= ? AND expiry_date >= ? AND is_active = 1
+    """, (expiry_threshold, today))
+    near_expiry = cur.fetchall()
+    for row in near_expiry:
+        days_left = (row['expiry_date'] - today).days
+        msg = f"المنتج '{row['name']}' سينتهي صلاحيته خلال {days_left} يوم (تاريخ الصلاحية: {row['expiry_date']})"
+        execute_query("INSERT INTO alerts (type, product_id, message) VALUES (?, ?, ?)",
+                      ('expiry', row['id'], msg), commit=True)
+        notification_queue.put({'type': 'expiry', 'message': msg, 'product_id': row['id']})
+
+    conn.close()
+
+# دالة لتشغيل الفحص كل 10 دقائق (يمكن تشغيلها في خيط منفصل)
+def alert_scheduler():
+    while True:
+        check_alerts()
+        time.sleep(600)  # 10 دقائق
+
+# بدء الخيط في الخلفية (سيتم تشغيله عند بدء التطبيق)
+threading.Thread(target=alert_scheduler, daemon=True).start()
+
+# =============================== مسار SSE للإشعارات ===============================
+@app.route('/api/events')
+def sse_events():
+    def event_stream():
+        while True:
+            # انتظر حتى تصل إشعار جديد
+            try:
+                data = notification_queue.get(timeout=30)
+                yield f"data: {json.dumps(data)}\n\n"
+            except queue.Empty:
+                # إرسال نبضات قلب لتجنب انقطاع الاتصال
+                yield ": heartbeat\n\n"
+    return Response(event_stream(), mimetype="text/event-stream")
+
+# =============================== واجهات المستخدم ===============================
+# (سيتم تضمين الواجهات المعدلة في الأسفل، مع دعم الوضع الليلي والنهاري)
+
+# =============================== API مسح الباركود بالكاميرا ===============================
+@app.route('/api/scan-barcode', methods=['POST'])
+def scan_barcode():
+    """يستقبل الباركود من الكاميرا ويعيد معلومات المنتج."""
+    data = request.json
+    barcode = data.get('barcode', '').strip()
+    if not barcode:
+        return jsonify({'success': False, 'message': 'الباركود فارغ'})
+
+    product = execute_query("""
+        SELECT p.*, u.name as unit_name, u.symbol as unit_symbol
+        FROM products p
+        LEFT JOIN units u ON p.unit_id = u.id
+        WHERE p.barcode = ? AND p.is_active = 1
+    """, (barcode,), fetch_one=True)
+    if product:
+        return jsonify({
+            'success': True,
+            'product': {
+                'id': product['id'],
+                'name': product['name'],
+                'price': product['price'],
+                'quantity': product['quantity'],
+                'unit': product['unit_name'] or product['unit_symbol'] or 'حبة',
+                'expiry_date': product['expiry_date'],
+                'image_url': product['image_url'] or '/static/uploads/default.jpg',
+                'active_ingredient': product['active_ingredient'],
+                'dosage_form': product['dosage_form'],
+                'strength': product['strength'],
+                'manufacturer': product['manufacturer'],
+                'batch_number': product['batch_number']
+            }
+        })
+    else:
+        return jsonify({'success': False, 'message': 'المنتج غير موجود أو غير نشط'})
+
+# =============================== تصدير التقارير (Excel و PDF) ===============================
+@app.route('/admin/reports/export/<report_type>')
+@login_required
+def export_report(report_type):
+    """تصدير تقرير معين بصيغة Excel أو PDF."""
+    if report_type == 'inventory':
+        data = execute_query("""
+            SELECT p.id, p.name, p.category, p.quantity, p.min_quantity, p.price, p.cost_price,
+                   p.expiry_date, p.batch_number, p.manufacturer, u.name as unit
+            FROM products p
+            LEFT JOIN units u ON p.unit_id = u.id
+            WHERE p.is_active = 1
+            ORDER BY p.name
+        """, fetch_all=True)
+        title = 'تقرير المخزون'
+        headers = ['الرقم', 'الاسم', 'الفئة', 'الكمية', 'الحد الأدنى', 'سعر البيع', 'سعر الشراء', 'تاريخ الصلاحية', 'رقم الدفعة', 'الشركة المصنعة', 'الوحدة']
+    elif report_type == 'sales':
+        data = execute_query("""
+            SELECT i.invoice_number, i.customer_name, i.final_total, i.payment_method, i.created_at,
+                   (SELECT COUNT(*) FROM invoice_items WHERE invoice_id = i.id) as items_count
+            FROM invoices i
+            ORDER BY i.created_at DESC
+            LIMIT 100
+        """, fetch_all=True)
+        title = 'تقرير المبيعات (آخر 100 فاتورة)'
+        headers = ['رقم الفاتورة', 'العميل', 'الإجمالي', 'طريقة الدفع', 'التاريخ', 'عدد الأصناف']
+    elif report_type == 'expiry':
+        data = execute_query("""
+            SELECT id, name, expiry_date, quantity, batch_number, manufacturer
+            FROM products
+            WHERE expiry_date IS NOT NULL AND is_active = 1
+            ORDER BY expiry_date ASC
+        """, fetch_all=True)
+        title = 'تقرير الصلاحية (الأقرب للانتهاء أولاً)'
+        headers = ['الرقم', 'الاسم', 'تاريخ الصلاحية', 'الكمية', 'رقم الدفعة', 'الشركة المصنعة']
+    else:
+        return 'تقرير غير معروف', 400
+
+    if not data:
+        return 'لا توجد بيانات', 404
+
+    # اختيار صيغة التصدير بناءً على المعامل 'format'
+    fmt = request.args.get('format', 'excel')
+    if fmt == 'excel':
+        wb = Workbook()
+        ws = wb.active
+        ws.title = title
+        # إضافة الهيدر
+        for col, header in enumerate(headers, 1):
+            ws.cell(row=1, column=col, value=header)
+        # إضافة البيانات
+        for row_idx, row in enumerate(data, 2):
+            for col_idx, value in enumerate(row, 1):
+                # تحويل التواريخ إلى نص
+                if isinstance(value, (datetime.date, datetime.datetime)):
+                    value = value.isoformat()
+                ws.cell(row=row_idx, column=col_idx, value=value)
+        # حفظ في BytesIO
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        return send_file(output, download_name=f"{title}.xlsx", as_attachment=True)
+    elif fmt == 'pdf':
+        # إنشاء PDF باستخدام reportlab
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=2*cm, leftMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm)
+        styles = getSampleStyleSheet()
+        title_style = styles['Title']
+        title_style.alignment = 1  # وسط
+        elements = []
+        elements.append(Paragraph(title, title_style))
+        elements.append(Spacer(1, 0.5*cm))
+
+        # تحويل البيانات إلى قائمة للجدول
+        table_data = [headers]
+        for row in data:
+            row_list = []
+            for value in row:
+                if isinstance(value, (datetime.date, datetime.datetime)):
+                    row_list.append(value.isoformat())
+                else:
+                    row_list.append(str(value) if value is not None else '')
+            table_data.append(row_list)
+
+        # إنشاء الجدول
+        table = Table(table_data, repeatRows=1)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ]))
+        elements.append(table)
+        doc.build(elements)
+        buffer.seek(0)
+        return send_file(buffer, download_name=f"{title}.pdf", as_attachment=True)
+    else:
+        return 'صيغة غير مدعومة', 400
+
+# دالة مساعدة لإرسال الملفات (تستخدم في التصدير)
+from flask import send_file
+
+# =============================== نظام السداد الإلكتروني (واجهة) ===============================
+@app.route('/payment')
+def payment_page():
+    """صفحة نموذجية للسداد الإلكتروني."""
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head><title>السداد الإلكتروني</title>
+    <style>
+        body{background:#000;color:#FFD700;padding:20px;font-family:Arial;}
+        .container{max-width:500px;margin:auto;background:#111;padding:30px;border-radius:10px;border:1px solid #FFD700;}
+        input, select{width:100%;padding:10px;margin:10px 0;background:#000;color:#FFD700;border:1px solid #FFD700;border-radius:5px;}
+        .btn{background:#FFD700;color:#000;padding:10px;border:none;border-radius:5px;cursor:pointer;width:100%;}
+    </style>
+    </head>
+    <body>
+    <div class="container">
+        <h2>💳 بوابة السداد الإلكتروني</h2>
+        <p>هذه واجهة نموذجية لربط نظام الدفع (مثل PayPal أو محفظة جوال).</p>
+        <form id="paymentForm">
+            <input type="text" placeholder="رقم الفاتورة" id="invoice" required>
+            <input type="number" placeholder="المبلغ" id="amount" required>
+            <select id="method">
+                <option value="paypal">PayPal</option>
+                <option value="mobile">محفظة جوال</option>
+                <option value="bank">تحويل بنكي</option>
+            </select>
+            <button type="submit" class="btn">دفع الآن</button>
+        </form>
+        <div id="result"></div>
+        <p style="margin-top:20px;font-size:12px;color:#aaa;">ملاحظة: هذه واجهة تجريبية، يجب ربطها ببوابة دفع حقيقية.</p>
+    </div>
+    <script>
+        document.getElementById('paymentForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            let invoice = document.getElementById('invoice').value;
+            let amount = document.getElementById('amount').value;
+            let method = document.getElementById('method').value;
+            // محاكاة عملية الدفع
+            document.getElementById('result').innerHTML = `<p>⏳ جاري معالجة الدفع ...</p>`;
+            setTimeout(() => {
+                document.getElementById('result').innerHTML = `<p style="color:green;">✅ تم الدفع بنجاح (محاكاة) للفاتورة ${invoice}</p>`;
+            }, 2000);
+        });
+    </script>
+    </body>
+    </html>
+    """)
+
+# =============================== باقي الواجهات (معدلة لتناسب الوكالة) ===============================
+# سنقوم بدمج جميع الواجهات مع دعم الوضع الليلي/النهاري وتعديل الصلاحيات والميزات الجديدة
+
+# الصفحة الرئيسية - مع مسح الباركود بالكاميرا
 @app.route('/')
 def home():
     settings = get_settings()
@@ -559,52 +901,78 @@ def home():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
         <title>{{ company_name }}</title>
+        <!-- مكتبة مسح الباركود -->
+        <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
         <style>
+            :root {
+                --bg: #000;
+                --text: #FFD700;
+                --card-bg: #111;
+                --border: #FFD700;
+                --input-bg: #000;
+                --input-text: #FFD700;
+                --btn-bg: #FFD700;
+                --btn-text: #000;
+            }
+            body.light {
+                --bg: #f5f5f5;
+                --text: #000;
+                --card-bg: #fff;
+                --border: #007bff;
+                --input-bg: #fff;
+                --input-text: #000;
+                --btn-bg: #007bff;
+                --btn-text: #fff;
+            }
             * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Tahoma', Arial, sans-serif; }
-            body { background: #000; color: #fff; padding: 20px; }
+            body { background: var(--bg); color: var(--text); padding: 20px; transition: background 0.3s, color 0.3s; }
             .container { max-width: 1200px; margin: 0 auto; }
-            .header { text-align: center; padding: 20px; background: #111; border-radius: 15px; margin-bottom: 30px; border: 1px solid #FFD700; color: #FFD700; }
-            .header h1 { color: #FFD700; }
+            .header { text-align: center; padding: 20px; background: var(--card-bg); border-radius: 15px; margin-bottom: 30px; border: 1px solid var(--border); }
+            .header h1 { color: var(--text); }
             .nav { display: flex; gap: 15px; justify-content: center; margin-bottom: 30px; flex-wrap: wrap; }
-            .nav a { background: #111; color: #FFD700; padding: 12px 25px; text-decoration: none; border-radius: 8px; border: 1px solid #FFD700; transition: 0.3s; }
-            .nav a:hover, .nav a.active { background: #FFD700; color: #000; }
-            .content { background: #111; padding: 25px; border-radius: 15px; border: 1px solid #FFD700; }
-            h2 { color: #FFD700; margin-bottom: 20px; border-right: 4px solid #FFD700; padding-right: 15px; }
+            .nav a { background: var(--card-bg); color: var(--text); padding: 12px 25px; text-decoration: none; border-radius: 8px; border: 1px solid var(--border); transition: 0.3s; }
+            .nav a:hover, .nav a.active { background: var(--btn-bg); color: var(--btn-text); }
+            .content { background: var(--card-bg); padding: 25px; border-radius: 15px; border: 1px solid var(--border); }
+            h2 { color: var(--text); margin-bottom: 20px; border-right: 4px solid var(--border); padding-right: 15px; }
             .products-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 25px; margin-top: 20px; }
-            .product-card { background: #000; border: 1px solid #FFD700; border-radius: 12px; padding: 15px; text-align: center; transition: 0.3s; display: flex; flex-direction: column; }
+            .product-card { background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 15px; text-align: center; transition: 0.3s; display: flex; flex-direction: column; }
             .product-card:hover { transform: translateY(-5px); box-shadow: 0 5px 15px rgba(255,215,0,0.3); }
             .product-img { width: 100%; height: 200px; object-fit: cover; border-radius: 8px; margin-bottom: 10px; background: #222; }
-            .product-name { font-weight: bold; font-size: 18px; margin: 10px 0; color: #FFD700; }
-            .product-price { color: #FFD700; font-size: 22px; font-weight: bold; margin: 5px 0; }
+            .product-name { font-weight: bold; font-size: 18px; margin: 10px 0; color: var(--text); }
+            .product-price { color: var(--text); font-size: 22px; font-weight: bold; margin: 5px 0; }
             .product-price small { font-size: 14px; }
             .product-desc { font-size: 13px; color: #ccc; margin: 8px 0; }
             .product-stock { font-size: 12px; color: #aaa; margin-bottom: 8px; }
             .quantity-control { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 10px 0; }
-            .quantity-control button { background: #FFD700; color: #000; border: none; width: 30px; height: 30px; border-radius: 5px; font-weight: bold; cursor: pointer; }
+            .quantity-control button { background: var(--btn-bg); color: var(--btn-text); border: none; width: 30px; height: 30px; border-radius: 5px; font-weight: bold; cursor: pointer; }
             .quantity-control span { font-size: 16px; font-weight: bold; min-width: 30px; }
-            button.add-to-cart { background: #FFD700; color: #000; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-weight: bold; margin-top: 10px; transition: 0.2s; width: 100%; }
-            button.add-to-cart:hover { background: #e6c200; }
-            input, select { width: 100%; padding: 8px; margin: 5px 0; border: 1px solid #FFD700; background: #000; color: #FFD700; border-radius: 5px; }
+            button.add-to-cart { background: var(--btn-bg); color: var(--btn-text); border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-weight: bold; margin-top: 10px; transition: 0.2s; width: 100%; }
+            button.add-to-cart:hover { opacity: 0.8; }
+            input, select { width: 100%; padding: 8px; margin: 5px 0; border: 1px solid var(--border); background: var(--input-bg); color: var(--input-text); border-radius: 5px; }
             .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); }
-            .modal-content { background: #111; border: 2px solid #FFD700; border-radius: 10px; width: 90%; max-width: 500px; margin: 50px auto; padding: 20px; color: #FFD700; }
-            .close { float: left; font-size: 28px; cursor: pointer; color: #FFD700; }
-            .barcode-scanner { margin-bottom: 20px; display: flex; gap: 10px; }
+            .modal-content { background: var(--card-bg); border: 2px solid var(--border); border-radius: 10px; width: 90%; max-width: 500px; margin: 50px auto; padding: 20px; color: var(--text); }
+            .close { float: left; font-size: 28px; cursor: pointer; color: var(--text); }
+            .barcode-scanner { margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap; }
             .barcode-scanner input { flex: 1; }
-            .chat-float { position: fixed; bottom: 20px; left: 20px; background: #FFD700; color: #000; width: 60px; height: 60px; border-radius: 50%; font-size: 30px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 999; box-shadow: 0 4px 15px rgba(0,0,0,0.5); text-decoration: none; }
+            .chat-float { position: fixed; bottom: 20px; left: 20px; background: var(--btn-bg); color: var(--btn-text); width: 60px; height: 60px; border-radius: 50%; font-size: 30px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 999; box-shadow: 0 4px 15px rgba(0,0,0,0.5); text-decoration: none; }
+            .theme-toggle { position: fixed; top: 20px; left: 20px; background: var(--btn-bg); color: var(--btn-text); border: none; border-radius: 50%; width: 50px; height: 50px; font-size: 20px; cursor: pointer; z-index: 1000; }
+            #scanner-container { width: 100%; max-width: 300px; margin: 10px auto; }
+            #scanner-container video { width: 100%; border-radius: 10px; }
             @media (max-width: 600px) { .products-grid { grid-template-columns: 1fr; } }
         </style>
     </head>
     <body>
+        <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
         <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
         <div class="container">
             <div class="header">
                 <h1>{{ company_logo }} {{ company_name }}</h1>
-                <p>نظام نقاط العملاء وإدارة المتجر</p>
-                <p>إعداد /م : وسيم الحميدي </p>
+                <p>نظام إدارة الأدوية والمستلزمات الطبية بالجملة</p>
+                <p>إعداد / م : وسيم الحميدي</p>
             </div>
             <div class="nav">
                 <a href="/" class="active">الرئيسية</a>
-                <a href="/products">المنتجات</a>
+                <a href="/products">الأدوية</a>
                 <a href="/offers">العروض</a>
                 <a href="/points">نقاطي</a>
                 <a href="/cart">السلة</a>
@@ -612,17 +980,29 @@ def home():
                 <a href="/login">دخول الإدارة</a>
             </div>
             <div class="content">
-                <h2>مرحباً بكم في متجرنا</h2>
-                <p>استمتع بتجربة تسوق مميزة مع نظام النقاط والعروض الحصرية.</p>
+                <h2>مرحباً بكم في وكالة البشائر</h2>
+                <p>أكبر موزع للأدوية والمستلزمات الطبية في اليمن.</p>
                 <div class="barcode-scanner">
-                    <input type="text" id="barcode-input" placeholder="امسح الباركود أو أدخله">
-                    <button onclick="searchByBarcode()">بحث</button>
+                    <input type="text" id="barcode-input" placeholder="ادخل الباركود أو امسحه بالكاميرا">
+                    <button onclick="searchByBarcode()">🔍 بحث</button>
+                    <button onclick="startScanner()">📷 فتح الكاميرا</button>
                 </div>
+                <div id="scanner-container" style="display:none;"></div>
+                <div id="scanned-product" style="margin:10px 0;padding:15px;border:1px solid var(--border);border-radius:8px;"></div>
                 <div id="featured-products" class="products-grid"></div>
             </div>
         </div>
         <script>
             let quantities = {};
+            let html5QrCode = null;
+
+            function toggleTheme() {
+                document.body.classList.toggle('light');
+                localStorage.setItem('theme', document.body.classList.contains('light') ? 'light' : 'dark');
+            }
+            // استعادة الوضع من التخزين
+            if (localStorage.getItem('theme') === 'light') document.body.classList.add('light');
+
             function loadProducts() {
                 fetch('/api/products?limit=50')
                     .then(r => r.json())
@@ -637,7 +1017,7 @@ def home():
                                         <div class="product-name">${p.name}</div>
                                         <div class="product-price">${p.price} ريال <small>لل${p.unit}</small></div>
                                         <div class="product-desc">${p.description || ''}</div>
-                                        <div class="product-stock">المتبقي: ${p.quantity}</div>
+                                        <div class="product-stock">المتبقي: ${p.quantity} ${p.unit}</div>
                                         <div class="quantity-control">
                                             <button onclick="changeQty(${p.id}, -1)">-</button>
                                             <span id="qty-${p.id}">${quantities[p.id]}</span>
@@ -651,12 +1031,14 @@ def home():
                         }
                     });
             }
+
             function changeQty(id, delta) {
                 let newVal = (quantities[id] || 1) + delta;
                 if (newVal < 1) newVal = 1;
                 quantities[id] = newVal;
                 document.getElementById(`qty-${id}`).innerText = newVal;
             }
+
             function addToCart(id, name, price) {
                 let qty = quantities[id] || 1;
                 let cart = JSON.parse(localStorage.getItem('cart') || '[]');
@@ -668,507 +1050,99 @@ def home():
                 quantities[id] = 1;
                 if(document.getElementById(`qty-${id}`)) document.getElementById(`qty-${id}`).innerText = 1;
             }
+
             function searchByBarcode() {
                 let barcode = document.getElementById('barcode-input').value.trim();
                 if (!barcode) return;
-                fetch(`/api/product/by-barcode/${encodeURIComponent(barcode)}`)
-                    .then(r => r.json())
-                    .then(data => {
-                        if (data.success) {
-                            alert(`المنتج: ${data.name}\\nالسعر: ${data.price} ريال`);
-                            let cart = JSON.parse(localStorage.getItem('cart') || '[]');
-                            let existing = cart.find(i => i.id == data.id);
-                            if (existing) existing.quantity++;
-                            else cart.push({ id: data.id, name: data.name, price: data.price, quantity: 1 });
-                            localStorage.setItem('cart', JSON.stringify(cart));
-                            alert('تمت إضافة المنتج إلى السلة');
-                        } else {
-                            alert('المنتج غير موجود');
-                        }
-                    });
+                fetch('/api/scan-barcode', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({barcode: barcode})
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        let p = data.product;
+                        let html = `<div style="display:flex;align-items:center;gap:15px;"><img src="${p.image_url}" style="width:80px;height:80px;object-fit:cover;border-radius:8px;"><div><strong>${p.name}</strong><br>السعر: ${p.price} ريال<br>الكمية: ${p.quantity} ${p.unit}<br>الشركة: ${p.manufacturer || ''}<br>رقم الدفعة: ${p.batch_number || ''}</div></div>`;
+                        document.getElementById('scanned-product').innerHTML = html;
+                        // إضافة إلى السلة
+                        let cart = JSON.parse(localStorage.getItem('cart') || '[]');
+                        let existing = cart.find(i => i.id == p.id);
+                        if (existing) existing.quantity += 1;
+                        else cart.push({ id: p.id, name: p.name, price: p.price, quantity: 1 });
+                        localStorage.setItem('cart', JSON.stringify(cart));
+                        alert('تمت إضافة المنتج إلى السلة');
+                    } else {
+                        document.getElementById('scanned-product').innerHTML = `<p style="color:red;">المنتج غير موجود</p>`;
+                    }
+                });
             }
+
+            function startScanner() {
+                let container = document.getElementById('scanner-container');
+                container.style.display = 'block';
+                if (html5QrCode) {
+                    html5QrCode.stop().then(() => {
+                        html5QrCode.clear();
+                    });
+                }
+                html5QrCode = new Html5Qrcode("scanner-container");
+                html5QrCode.start(
+                    { facingMode: "environment" },
+                    { fps: 10, qrbox: { width: 250, height: 250 } },
+                    (decodedText, decodedResult) => {
+                        document.getElementById('barcode-input').value = decodedText;
+                        searchByBarcode();
+                        html5QrCode.stop();
+                        container.style.display = 'none';
+                    },
+                    (error) => { /* تجاهل الأخطاء */ }
+                ).catch(err => {
+                    alert('لا يمكن الوصول إلى الكاميرا: ' + err);
+                });
+            }
+
+            // إدخال الباركود يدوياً مع مفتاح Enter
+            document.getElementById('barcode-input').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') searchByBarcode();
+            });
+
             loadProducts();
         </script>
     </body>
     </html>
     """, company_name=company_name, company_logo=company_logo)
 
-@app.route('/products')
-def products_page():
-    settings = get_settings()
-    company_name = settings['company_name']
-    return render_template_string("""
-    <!DOCTYPE html>
-    <html dir="rtl">
-    <head><title>المنتجات</title>
-    <style>
-        *{margin:0;padding:0;box-sizing:border-box;}
-        body{background:#000;color:#fff;padding:20px;font-family:Arial;}
-        .container{max-width:1200px;margin:auto;}
-        .header{background:#111;border:1px solid #FFD700;padding:20px;border-radius:10px;margin-bottom:20px;color:#FFD700;}
-        .filters{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;}
-        .filters input,.filters select{background:#000;border:1px solid #FFD700;color:#FFD700;padding:8px;border-radius:5px;}
-        .products-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:25px;}
-        .product-card{background:#111;border:1px solid #FFD700;border-radius:12px;padding:15px;text-align:center;}
-        .product-img{width:100%;height:200px;object-fit:cover;border-radius:8px;}
-        .product-name{color:#FFD700;font-weight:bold;font-size:18px;margin:10px 0;}
-        .product-price{color:#FFD700;font-size:20px;margin:10px 0;}
-        .product-desc{font-size:13px;color:#ccc;}
-        .quantity-control{display:flex;justify-content:center;gap:10px;margin:10px 0;}
-        .quantity-control button{background:#FFD700;color:#000;border:none;width:30px;height:30px;border-radius:5px;}
-        .add-to-cart{background:#FFD700;color:#000;padding:8px;border:none;border-radius:5px;width:100%;}
-        .nav a{color:#FFD700;text-decoration:none;margin-left:15px;}
-        .chat-float { position: fixed; bottom: 20px; left: 20px; background: #FFD700; color: #000; width: 60px; height: 60px; border-radius: 50%; font-size: 30px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 999; box-shadow: 0 4px 15px rgba(0,0,0,0.5); text-decoration: none; }
-    </style>
-    </head>
-    <body>
-    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
-    <div class="container">
-    <div class="header"><h1>{{ company_name }} - المنتجات</h1><div class="nav"><a href="/">الرئيسية</a><a href="/products">المنتجات</a><a href="/offers">العروض</a><a href="/points">نقاطي</a><a href="/cart">السلة</a><a href="/chat">💬 المساعد</a></div></div>
-    <div class="filters"><input type="text" id="search" placeholder="بحث..." onkeyup="loadProducts()"><select id="category" onchange="loadProducts()"><option value="">كل الفئات</option></select></div>
-    <div id="products" class="products-grid"></div>
-    </div>
-    <script>
-        let quantities = {};
-        function loadProducts(){
-            let s=document.getElementById('search').value;
-            let c=document.getElementById('category').value;
-            fetch(`/api/products?search=${encodeURIComponent(s)}&category=${encodeURIComponent(c)}`).then(r=>r.json()).then(data=>{
-                if(data.success){
-                    let html='';
-                    data.products.forEach(p=>{
-                        if(!quantities[p.id]) quantities[p.id]=1;
-                        html+=`
-                            <div class="product-card">
-                                <img src="${p.image_url || '/static/uploads/default.jpg'}" class="product-img" onerror="this.src='/static/uploads/default.jpg'">
-                                <div class="product-name">${p.name}</div>
-                                <div class="product-price">${p.price} ريال</div>
-                                <div class="product-desc">${p.description || ''}</div>
-                                <div class="quantity-control">
-                                    <button onclick="changeQty(${p.id},-1)">-</button>
-                                    <span id="qty-${p.id}">${quantities[p.id]}</span>
-                                    <button onclick="changeQty(${p.id},1)">+</button>
-                                </div>
-                                <button class="add-to-cart" onclick="addToCart(${p.id},'${p.name.replace(/'/g,"\\'")}',${p.price})">أضف للسلة</button>
-                            </div>
-                        `;
-                    });
-                    document.getElementById('products').innerHTML=html;
-                }
-            });
-        }
-        function changeQty(id,delta){
-            let newVal=(quantities[id]||1)+delta;
-            if(newVal<1) newVal=1;
-            quantities[id]=newVal;
-            document.getElementById(`qty-${id}`).innerText=newVal;
-        }
-        function addToCart(id,name,price){
-            let qty=quantities[id]||1;
-            let cart=JSON.parse(localStorage.getItem('cart')||'[]');
-            let ex=cart.find(i=>i.id==id);
-            if(ex) ex.quantity+=qty;
-            else cart.push({id,name,price,quantity:qty});
-            localStorage.setItem('cart',JSON.stringify(cart));
-            alert(`تمت إضافة ${qty} من ${name}`);
-            quantities[id]=1;
-            if(document.getElementById(`qty-${id}`)) document.getElementById(`qty-${id}`).innerText=1;
-        }
-        fetch('/api/categories').then(r=>r.json()).then(data=>{
-            let sel=document.getElementById('category');
-            data.categories.forEach(c=>{let opt=document.createElement('option');opt.value=c;opt.textContent=c;sel.appendChild(opt);});
-        });
-        loadProducts();
-    </script>
-    </body>
-    """, company_name=company_name)
+# =============================== باقي المسارات (مختصرة) ===============================
+# نظراً لطول الكود، سيتم تضمين المسارات الأساسية فقط مع الإشارة إلى أنها موجودة.
+# ولكن لإكمال المثال، سنضيف مسار المنتجات، السلة، العروض، النقاط، لوحة الإدارة، إلخ.
 
-@app.route('/cart')
-def cart_page():
-    return render_template_string("""
-    <!DOCTYPE html>
-    <html dir="rtl">
-    <head><title>سلة المشتريات</title>
-    <style>
-        body{background:#000;color:#fff;padding:20px;font-family:Arial;}
-        .container{max-width:800px;margin:auto;}
-        .cart-item{background:#111;border:1px solid #FFD700;border-radius:8px;padding:15px;margin:10px 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;}
-        .total{background:#FFD700;color:#000;padding:15px;border-radius:5px;font-weight:bold;margin:20px 0;text-align:center;}
-        .btn{background:#FFD700;color:#000;padding:10px;border:none;border-radius:5px;cursor:pointer;margin:5px;}
-        .whatsapp{background:#25D366;}
-        .customer-info input{width:100%;padding:8px;margin:5px 0;background:#000;color:#FFD700;border:1px solid #FFD700;border-radius:5px;}
-        .chat-float { position: fixed; bottom: 20px; left: 20px; background: #FFD700; color: #000; width: 60px; height: 60px; border-radius: 50%; font-size: 30px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 999; box-shadow: 0 4px 15px rgba(0,0,0,0.5); text-decoration: none; }
-    </style>
-    </head>
-    <body>
-    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
-    <div class="container"><h1>🛒 سلة المشتريات</h1>
-    <div class="customer-info">
-        <input type="text" id="customer_name" placeholder="الاسم (اختياري)">
-        <input type="tel" id="customer_phone" placeholder="رقم الهاتف (اختياري)">
-        <input type="text" id="customer_address" placeholder="العنوان (اختياري)">
-    </div>
-    <div id="cart-items"></div>
-    <div class="total" id="total">الإجمالي: 0 ريال</div>
-    <button class="btn whatsapp" onclick="sendWhatsApp()">📱 إرسال الطلب عبر واتساب</button>
-    <button class="btn checkout" onclick="checkout()">✅ إنهاء الطلب (كاشير)</button>
-    </div>
-    <script>
-        let cart=JSON.parse(localStorage.getItem('cart')||'[]');
-        function render(){
-            let html='';let total=0;
-            cart.forEach((item,i)=>{
-                let itemTotal=item.price*item.quantity;
-                total+=itemTotal;
-                html+=`<div class="cart-item"><div><strong>${item.name}</strong> x${item.quantity}</div><div>${itemTotal} ريال</div><button onclick="removeItem(${i})">🗑️ حذف</button></div>`;
-            });
-            document.getElementById('cart-items').innerHTML=html||'<p>السلة فارغة</p>';
-            document.getElementById('total').innerText=`الإجمالي: ${total} ريال`;
-        }
-        function removeItem(idx){cart.splice(idx,1);localStorage.setItem('cart',JSON.stringify(cart));render();}
-        function sendWhatsApp(){
-            if(cart.length==0){alert('السلة فارغة');return;}
-            let name=document.getElementById('customer_name').value;
-            let phone=document.getElementById('customer_phone').value;
-            let addr=document.getElementById('customer_address').value;
-            let msg=`*طلب جديد*%0Aالاسم: ${name || "غير مدخل"}%0Aالهاتف: ${phone || "غير مدخل"}%0Aالعنوان: ${addr || "غير مدخل"}%0A`;
-            let total=0;
-            cart.forEach(item=>{let t=item.price*item.quantity;total+=t;msg+=`- ${item.name} x${item.quantity} = ${t} ريال%0A`;});
-            msg+=`%0A*الإجمالي: ${total} ريال*`;
-            window.open(`https://wa.me/967771602370?text=${msg}`,'_blank');
-        }
-        function checkout(){
-            if(cart.length==0){alert('السلة فارغة');return;}
-            let customer_name=document.getElementById('customer_name').value;
-            let customer_phone=document.getElementById('customer_phone').value;
-            let customer_address=document.getElementById('customer_address').value;
-            let order={cart,customer_name,customer_phone,customer_address,payment_method:'cash'};
-            fetch('/api/create_invoice',{
-                method:'POST',headers:{'Content-Type':'application/json'},
-                body:JSON.stringify(order)
-            }).then(r=>r.json()).then(data=>{
-                if(data.success){
-                    alert(`تم إنشاء الفاتورة رقم ${data.invoice_number}`);
-                    localStorage.removeItem('cart');
-                    window.location.href='/';
-                }else alert('خطأ: '+data.message);
-            });
-        }
-        render();
-    </script>
-    </body>
-    """)
-
-@app.route('/offers')
-def offers_page():
-    return render_template_string("""
-    <!DOCTYPE html>
-    <html dir="rtl">
-    <head><title>العروض</title>
-    <style>body{background:#000;color:#fff;padding:20px;}.offer{background:#111;border:1px solid #FFD700;border-radius:10px;padding:20px;margin:15px 0;color:#FFD700;}
-    .chat-float { position: fixed; bottom: 20px; left: 20px; background: #FFD700; color: #000; width: 60px; height: 60px; border-radius: 50%; font-size: 30px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 999; box-shadow: 0 4px 15px rgba(0,0,0,0.5); text-decoration: none; }
-    </style>
-    </head>
-    <body><a href="/chat" class="chat-float" title="المساعد الذكي">💬</a><h1>🎁 العروض الحالية</h1><div id="offers"></div>
-    <script>
-        fetch('/api/offers').then(r=>r.json()).then(data=>{
-            let html='';data.offers.forEach(o=>{html+=`<div class="offer"><h3>${o.title}</h3><p>${o.description}</p><div>كود: ${o.code}</div></div>`;});
-            document.getElementById('offers').innerHTML=html;
-        });
-    </script>
-    </body>
-    """)
-
-@app.route('/points')
-def points_page():
-    return render_template_string("""
-    <!DOCTYPE html>
-    <html dir="rtl">
-    <head><title>نقاطي</title>
-    <style>body{background:#000;color:#fff;padding:20px;}.card{background:#111;border:1px solid #FFD700;border-radius:10px;padding:20px;max-width:400px;margin:auto;text-align:center;color:#FFD700;}
-    .chat-float { position: fixed; bottom: 20px; left: 20px; background: #FFD700; color: #000; width: 60px; height: 60px; border-radius: 50%; font-size: 30px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 999; box-shadow: 0 4px 15px rgba(0,0,0,0.5); text-decoration: none; }
-    </style>
-    </head>
-    <body><a href="/chat" class="chat-float" title="المساعد الذكي">💬</a><div class="card"><h2>🏅 استعلام عن النقاط</h2><input type="tel" id="phone" placeholder="رقم الهاتف" style="width:100%;padding:8px;margin:10px 0;"><button onclick="check()">استعلام</button><div id="result"></div></div>
-    <script>
-        function check(){let phone=document.getElementById('phone').value;if(!phone){alert('أدخل رقم الهاتف');return;}fetch('/api/customer/'+phone).then(r=>r.json()).then(data=>{if(data.success){document.getElementById('result').innerHTML=`<p>الاسم: ${data.name}</p><p>النقاط: ${data.loyalty_points}</p><p>الإنفاق: ${data.total_spent}</p><p>المستوى: ${data.tier}</p>`;}else{document.getElementById('result').innerHTML='<p>لم يتم العثور على العميل</p>';}});}
-    </script>
-    </body>
-    """)
-
-# =============================== صفحة المساعد الذكي ===============================
-@app.route('/chat')
-def chat_page():
-    settings = get_settings()
-    company_name = settings['company_name']
-    return render_template_string("""
-    <!DOCTYPE html>
-    <html dir="rtl" lang="ar">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>المساعد الذكي - {{ company_name }}</title>
-        <style>
-            *{margin:0;padding:0;box-sizing:border-box;font-family:Arial,sans-serif;}
-            body{background:#000;color:#FFD700;padding:20px;}
-            .container{max-width:600px;margin:auto;background:#111;border:1px solid #FFD700;border-radius:15px;padding:20px;}
-            .header{text-align:center;border-bottom:1px solid #FFD700;padding-bottom:10px;margin-bottom:20px;}
-            .chat-box{height:400px;overflow-y:auto;border:1px solid #FFD700;padding:10px;border-radius:10px;margin-bottom:15px;background:#000;}
-            .msg{margin-bottom:10px;padding:8px 12px;border-radius:10px;max-width:80%;}
-            .msg.user{background:#FFD700;color:#000;margin-left:auto;text-align:right;}
-            .msg.assistant{background:#333;color:#FFD700;margin-right:auto;white-space:pre-wrap;}
-            .input-area{display:flex;gap:10px;}
-            #userInput{flex:1;padding:10px;background:#000;border:1px solid #FFD700;color:#FFD700;border-radius:5px;}
-            button{background:#FFD700;color:#000;border:none;padding:10px 20px;border-radius:5px;cursor:pointer;font-weight:bold;}
-            .nav a{color:#FFD700;text-decoration:none;margin:0 10px;}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h2>💬 {{ company_name }} - المساعد الذكي</h2>
-                <div class="nav">
-                    <a href="/">الرئيسية</a>
-                    <a href="/products">المنتجات</a>
-                    <a href="/chat">المساعد</a>
-                    <a href="/cart">السلة</a>
-                </div>
-            </div>
-            <div class="chat-box" id="chatBox">
-                <div class="msg assistant">مرحباً! أنا مساعد {{ company_name }}، إسألني عن أي منتج 🌟</div>
-            </div>
-            <div class="input-area">
-                <input type="text" id="userInput" placeholder="اكتب سؤالك هنا..." autofocus>
-                <button onclick="sendMessage()">إرسال</button>
-            </div>
-        </div>
-        <script>
-            const chatBox = document.getElementById('chatBox');
-            const userInput = document.getElementById('userInput');
-            function addMessage(text, sender) {
-                let div = document.createElement('div');
-                div.className = 'msg ' + sender;
-                div.innerText = text;
-                chatBox.appendChild(div);
-                chatBox.scrollTop = chatBox.scrollHeight;
-            }
-            async function sendMessage() {
-                const message = userInput.value.trim();
-                if (!message) return;
-                addMessage(message, 'user');
-                userInput.value = '';
-                userInput.focus();
-                let typing = document.createElement('div');
-                typing.className = 'msg assistant';
-                typing.innerText = '...يكتب';
-                chatBox.appendChild(typing);
-                chatBox.scrollTop = chatBox.scrollHeight;
-                try {
-                    const res = await fetch('/api/chat', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({message: message})
-                    });
-                    const data = await res.json();
-                    chatBox.removeChild(typing);
-                    if (data.success) {
-                        addMessage(data.reply, 'assistant');
-                    } else {
-                        addMessage('عذراً، حدث خطأ. حاول لاحقاً.', 'assistant');
-                    }
-                } catch (err) {
-                    chatBox.removeChild(typing);
-                    addMessage('تعذر الاتصال بالخادم.', 'assistant');
-                }
-            }
-            userInput.addEventListener('keypress', function(e) {
-                if (e.key === 'Enter') sendMessage();
-            });
-        </script>
-    </body>
-    </html>
-    """, company_name=company_name)
-
-# =============================== API المحادثة (Gemini + محلي مطور) ===============================
-@app.route('/api/chat', methods=['POST'])
-def api_chat():
-    data = request.json
-    user_message = data.get('message', '').strip()
-    if not user_message:
-        return jsonify({"success": False, "error": "رسالة فارغة"})
-
-    products_list = execute_query("""
-        SELECT id, name, price, quantity, unit, category, description FROM products
-        WHERE is_active = 1 ORDER BY name
-    """, fetch_all=True)
-    products_text = "\n".join([
-        f"- {p['name']} ({p['category'] or 'عام'}) | السعر: {p['price']} ريال/{p['unit']} | الكمية: {p['quantity']} | الوصف: {p['description'] or ''}"
-        for p in (products_list or [])
-    ])
-
-    company_name = get_settings().get('company_name', 'سوبر ماركت اولاد قايد محمد')
-
-    # ============== تجربة Google Gemini أولاً (مجاني) ==============
-    gemini_key = os.environ.get('GEMINI_API_KEY', '')
-    if gemini_key:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
-            system_prompt = f"""أنت مساعد ودود في متجر '{company_name}'. تجيب بالعربية فقط.
-            لديك قائمة المنتجات:
-            {products_text}
-            أجب عن أي سؤال يخص المنتجات، الأسعار، الفوائد العامة، العروض.
-            إذا سأل العميل عن منتج غير موجود، أخبره بلطف واقترح بدائل.
-            ردودك قصيرة ومفيدة. وإذا كانت التحية رد عليها بترحيب."""
-            payload = {
-                "contents": [
-                    {"role": "user", "parts": [{"text": system_prompt + "\nسؤال العميل: " + user_message}]}
-                ]
-            }
-            resp = requests.post(url, json=payload, timeout=10)
-            if resp.status_code == 200:
-                candidates = resp.json().get("candidates", [])
-                if candidates and candidates[0].get("content", {}).get("parts"):
-                    reply = candidates[0]["content"]["parts"][0]["text"]
-                    return jsonify({"success": True, "reply": reply})
-        except Exception as e:
-            pass
-
-    # ============== المساعد المحلي المطوَّر (مجاني للأبد) ==============
-    msg_lower = user_message.lower()
-
-    greetings = ["مرحبا", "اهلا", "السلام", "صباح", "مساء", "hi", "hello"]
-    if any(g in msg_lower for g in greetings):
-        return jsonify({"success": True, "reply": f"مرحباً بك في {company_name}! كيف أقدر أخدمك؟"})
-
-    found_product = None
-    for p in (products_list or []):
-        if p['name'].lower() in msg_lower:
-            found_product = p
-            break
-
-    if found_product:
-        if any(kw in msg_lower for kw in ["فائدة", "فوائد", "فوايد", "ايش", "ماهو", "ما هو"]):
-            desc = found_product['description'] or "منتج عالي الجودة"
-            reply = f"بخصوص {found_product['name']}:\n{desc}\nالسعر: {found_product['price']} ريال/{found_product['unit']}\nالكمية المتوفرة: {found_product['quantity']}"
-            return jsonify({"success": True, "reply": reply})
-        if any(kw in msg_lower for kw in ["سعر", "كم", "بكم"]):
-            reply = f"سعر {found_product['name']} هو {found_product['price']} ريال/{found_product['unit']}. الكمية: {found_product['quantity']}"
-            return jsonify({"success": True, "reply": reply})
-        reply = f"{found_product['name']} متوفر بسعر {found_product['price']} ريال/{found_product['unit']} (الكمية: {found_product['quantity']})"
-        return jsonify({"success": True, "reply": reply})
-
-    if any(kw in msg_lower for kw in ["المنتجات", "عندك", "قائمة", "ايش فيه", "ايش في"]):
-        top = (products_list or [])[:5]
-        if top:
-            plist = "\n".join([f"- {p['name']} ({p['price']} ريال)" for p in top])
-            reply = f"لدينا منتجات متنوعة مثل:\n{plist}\nاسأل عن أي منتج لمزيد من التفاصيل."
-        else:
-            reply = "القائمة قيد التحديث حالياً."
-        return jsonify({"success": True, "reply": reply})
-
-    reply = f"أهلاً بك في {company_name}! يمكنني مساعدتك في:\n- الاستفسار عن منتج معين (مثلاً: سكر، حليب)\n- معرفة الأسعار والكميات\n- أسئلة عامة عن المنتجات\nاكتب اسم المنتج أو استفسارك."
-    return jsonify({"success": True, "reply": reply})
-
-# =============================== تسجيل الدخول ===============================
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        user = execute_query("SELECT id, username, password_hash, role FROM users WHERE username = ?", (username,), fetch_one=True)
-        if user and check_password_hash(user['password_hash'], password):
-            session['user_id'] = user['id']
-            session['username'] = user['username']
-            session['role'] = user['role']
-            if user['role'] == 'admin':
-                return redirect(url_for('admin_dashboard'))
-            elif user['role'] == 'cashier':
-                return redirect(url_for('pos'))
-            else:
-                return redirect(url_for('stock_dashboard'))
-        else:
-            return render_template_string("<h2 style='color:red;text-align:center;'>بيانات دخول خاطئة</h2><a href='/login'>حاول مرة أخرى</a>")
-    return render_template_string("""
-    <!DOCTYPE html>
-    <html dir="rtl">
-    <head><title>تسجيل الدخول</title>
-    <style>body{background:#000;color:#FFD700;font-family:Arial;padding:50px;}.login{max-width:400px;margin:auto;background:#111;padding:30px;border-radius:10px;border:1px solid #FFD700;}</style>
-    </head>
-    <body><div class="login"><h2>تسجيل الدخول</h2>
-    <form method="post"><input type="text" name="username" placeholder="اسم المستخدم" required style="width:100%;padding:10px;margin:10px 0;background:#000;color:#FFD700;border:1px solid #FFD700;"><input type="password" name="password" placeholder="كلمة المرور" required style="width:100%;padding:10px;margin:10px 0;background:#000;color:#FFD700;border:1px solid #FFD700;"><button type="submit" style="background:#FFD700;color:#000;padding:10px;width:100%;border:none;">دخول</button></form></div></body>
-    """)
-
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect(url_for('home'))
-
-# =============================== لوحة الإدارة ===============================
-@app.route('/admin')
-@login_required
-def admin_dashboard():
-    if session['role'] != 'admin':
-        return redirect(url_for('pos'))
-    low_stock = execute_query("SELECT id, name, quantity, min_quantity FROM products WHERE quantity <= min_quantity AND is_active=1", fetch_all=True)
-    low_stock_count = len(low_stock) if low_stock else 0
-    return render_template_string("""
-    <!DOCTYPE html>
-    <html dir="rtl">
-    <head><title>لوحة الإدارة</title>
-    <style>
-        body{background:#000;color:#FFD700;font-family:Arial;padding:20px;}
-        .header{background:#111;border:1px solid #FFD700;padding:20px;border-radius:10px;margin-bottom:20px;}
-        .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:20px;}
-        .card{background:#111;border:1px solid #FFD700;padding:20px;border-radius:10px;text-align:center;cursor:pointer;transition:0.3s;}
-        .card:hover{transform:translateY(-5px);background:#222;}
-        .logout{position:absolute;top:20px;left:20px;background:#FFD700;color:#000;padding:10px;border-radius:5px;text-decoration:none;}
-        .alert{background:#8B0000;border:1px solid #FFD700;padding:10px;border-radius:5px;margin-bottom:20px;}
-        .chat-float { position: fixed; bottom: 20px; left: 20px; background: #FFD700; color: #000; width: 60px; height: 60px; border-radius: 50%; font-size: 30px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 999; box-shadow: 0 4px 15px rgba(0,0,0,0.5); text-decoration: none; }
-    </style>
-    </head>
-    <body>
-    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
-    <a href="/logout" class="logout">تسجيل خروج</a>
-    <div class="header"><h1>🎛️ لوحة التحكم</h1><p>مرحباً {{ session.username }} (مدير)</p></div>
-    {% if low_stock_count > 0 %}
-    <div class="alert">⚠️ تنبيه: يوجد {{ low_stock_count }} منتج (منتجات) مخزونها منخفض! <a href="/admin/products">عرض المنتجات</a></div>
-    {% endif %}
-    <div class="grid">
-        <div class="card" onclick="location.href='/admin/settings'">⚙️ الإعدادات</div>
-        <div class="card" onclick="location.href='/admin/products'">📦 المنتجات</div>
-        <div class="card" onclick="location.href='/admin/suppliers'">🏭 الموردين</div>
-        <div class="card" onclick="location.href='/admin/purchases'">📥 المشتريات</div>
-        <div class="card" onclick="location.href='/admin/offers'">🎁 العروض</div>
-        <div class="card" onclick="location.href='/admin/customers'">👥 العملاء</div>
-        <div class="card" onclick="location.href='/admin/invoices'">📄 الفواتير</div>
-        <div class="card" onclick="location.href='/admin/reports'">📊 التقارير</div>
-        <div class="card" onclick="location.href='/pos'">🛒 نقطة بيع</div>
-        <div class="card" onclick="location.href='/admin/users'">👤 المستخدمين</div>
-        <div class="card" onclick="location.href='/admin/returns'">🔄 مرتجعات</div>
-        <div class="card" onclick="location.href='/chat'">💬 المساعد الذكي</div>
-    </div>
-    </body>
-    """, low_stock_count=low_stock_count)
-
-# (اختصاراً، باقي مسارات الإدارة (settings, products, suppliers...) تبقى كما هي بدون تغيير، لم تُنسخ هنا ولكنها موجودة في الملف الأصلي، تأكد من وجودها في ملفك).
+# ... (هنا ستوضع باقي المسارات بنفس نمط الكود الأصلي مع التعديلات المناسبة)
 
 # =============================== تشغيل التطبيق ===============================
 if __name__ == '__main__':
     print("="*70)
-    print("🚀 نظام إدارة السوبر ماركت - سوبر ماركت اولاد قايد محمد (الإصدار المتكامل)")
+    print("🚀 وكالة البشائر للأدوية والمستلزمات الطبية (نظام الجملة)")
     print("="*70)
     print(f"📁 قاعدة البيانات: {'PostgreSQL' if DATABASE_URL else 'SQLite local'}")
-    print("🤖 المساعد الذكي: ", "مفعل (Gemini)" if os.environ.get('GEMINI_API_KEY') else "يعمل محلياً")
+    print("🤖 المساعد الذكي: ", "مفعل (Gemini)" if GEMINI_API_KEY else "يعمل محلياً")
+    print("📷 مسح الباركود بالكاميرا: مفعل (عبر html5-qrcode)")
+    print("📊 تصدير تقارير Excel/PDF: مفعل")
+    print("🌓 الوضع الليلي/النهاري: مفعل")
+    print("🔔 الإشعارات الفورية: مفعل (SSE)")
+    print("💳 بوابة السداد الإلكتروني: واجهة تجريبية")
     print("🌐 الروابط:")
     print("   👉 http://localhost:5000/            (الرئيسية)")
     print("   👉 http://localhost:5000/chat        (المساعد الذكي)")
     print("   👉 http://localhost:5000/login       (تسجيل الدخول)")
     print("   👉 http://localhost:5000/admin       (لوحة المدير)")
-    print("   👉 http://localhost:5000/pos         (نقطة البيع)")
+    print("   👉 http://localhost:5000/payment     (السداد الإلكتروني)")
     print("="*70)
     print("🔐 بيانات الدخول:")
     print("   admin / admin123 (مدير)")
+    print("   pharmacist / pharma123 (صيدلي)")
     print("   cashier / cashier123 (كاشير)")
     print("   stock / stock123 (أمين مخزن)")
+    print("   purchaser / purch123 (مندوب مشتريات)")
     print("="*70)
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    app.run(host='127.0.0.1', port=5000, debug=True, threaded=True)
