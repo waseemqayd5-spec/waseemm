@@ -9,3 +9,10 @@ openai                 # اختياري (إذا كنت تستخدم OpenAI)
 qrcode[pil]            # اختياري (لإنشاء QR)
 PyJWT                  # اختياري
 pywhatkit              # اختياري
+scikit-learn
+numpy
+pytesseract
+pillow
+opencv-python
+pyzbar
+sentence-transformers
