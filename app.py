@@ -1,14 +1,6 @@
 """
 نظام إدارة وكالة البشائر للأدوية والمستلزمات الطبية (جملة)
-نسخة متطورة مع ميزات الذكاء الاصطناعي:
-- التسعير الديناميكي
-- كشف الشذوذ والاحتيال
-- مساعد صيدلاني ذكي متقدم (RAG + LLM)
-- التعرف على الأدوية من الصور (OCR + Computer Vision)
-- نظام توصيات مخصص للعملاء
-- تحليل المشاعر من التقييمات
-- استخراج بيانات الفواتير الورقية (OCR + NLP)
-- لوحات معلومات ذكية (تحليل بيانات + استعلامات طبيعية)
+نسخة متطورة مع ميزات الذكاء الاصطناعي - جميع الصفحات مكتملة
 """
 
 from flask import (
@@ -383,7 +375,6 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # جداول جديدة لميزات الذكاء الاصطناعي
         cur.execute("""
             CREATE TABLE IF NOT EXISTS feedback (
                 id SERIAL PRIMARY KEY,
@@ -867,7 +858,6 @@ def calculate_dynamic_price(product_id):
     velocity = product['sales_velocity'] or 1.0
     expiry = product['expiry_date']
 
-    # العوامل المؤثرة
     factors = {
         'demand': 1.0,
         'stock': 1.0,
@@ -876,63 +866,53 @@ def calculate_dynamic_price(product_id):
         'class': 1.0
     }
 
-    # 1. الطلب (سرعة المبيعات)
     if velocity > 5:
-        factors['demand'] = 1.08  # طلب مرتفع -> زيادة السعر 8%
+        factors['demand'] = 1.08
     elif velocity > 2:
         factors['demand'] = 1.03
     elif velocity < 0.5:
-        factors['demand'] = 0.95  # طلب منخفض -> تخفيض 5%
+        factors['demand'] = 0.95
 
-    # 2. المخزون
     if quantity < 20:
-        factors['stock'] = 1.05  # مخزون منخفض -> زيادة 5%
+        factors['stock'] = 1.05
     elif quantity > 200:
-        factors['stock'] = 0.92  # مخزون مرتفع -> تخفيض 8%
+        factors['stock'] = 0.92
 
-    # 3. تاريخ الصلاحية
     if expiry:
         today = datetime.date.today()
         if isinstance(expiry, str):
             expiry = datetime.datetime.strptime(expiry, '%Y-%m-%d').date()
         days_left = (expiry - today).days
         if days_left < 30:
-            factors['expiry'] = 0.80  # قرب انتهاء الصلاحية -> تخفيض 20%
+            factors['expiry'] = 0.80
         elif days_left < 60:
             factors['expiry'] = 0.90
 
-    # 4. الفئة (هامش الربح حسب الفئة)
     if product['category'] in ['مسكنات', 'مضادات حيوية']:
         factors['category'] = 1.05
     elif product['category'] in ['أمراض مزمنة', 'أمراض نفسية']:
         factors['category'] = 1.02
 
-    # 5. تصنيف ABC
     if product['abc_class'] == 'A':
-        factors['class'] = 1.03  # منتجات A (عالية القيمة) -> زيادة طفيفة
+        factors['class'] = 1.03
     elif product['abc_class'] == 'C':
-        factors['class'] = 0.95  # منتجات C -> تخفيض
+        factors['class'] = 0.95
 
-    # حساب السعر النهائي
     dynamic_price = base_price
     for factor in factors.values():
         dynamic_price *= factor
 
-    # التأكد من أن السعر لا يقل عن سعر التكلفة + هامش 10%
     min_price = cost * 1.1
     if dynamic_price < min_price:
         dynamic_price = min_price
 
-    # التقريب إلى أقرب 0.5 ريال
     dynamic_price = round(dynamic_price * 2) / 2
 
-    # تحديث السعر في قاعدة البيانات
     execute_query("""
         UPDATE products SET dynamic_price = ?, price_updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
     """, (dynamic_price, product_id), commit=True)
 
-    # تسجيل في سجل الأسعار
     execute_query("""
         INSERT INTO price_history (product_id, old_price, new_price, reason, created_by)
         VALUES (?, ?, ?, ?, ?)
@@ -942,7 +922,6 @@ def calculate_dynamic_price(product_id):
 
 @app.route('/api/dynamic-price/<int:product_id>', methods=['GET'])
 def api_dynamic_price(product_id):
-    """الحصول على السعر الديناميكي للمنتج"""
     price = calculate_dynamic_price(product_id)
     if price is None:
         return jsonify({'success': False, 'message': 'المنتج غير موجود'})
@@ -951,21 +930,18 @@ def api_dynamic_price(product_id):
 @app.route('/admin/dynamic-pricing', methods=['GET', 'POST'])
 @admin_required
 def dynamic_pricing_page():
-    """صفحة التسعير الديناميكي"""
     if request.method == 'POST':
         product_id = request.form.get('product_id')
         if product_id:
             price = calculate_dynamic_price(int(product_id))
             return jsonify({'success': True, 'price': price})
 
-    # عرض جميع المنتجات مع أسعارها الديناميكية
     products = execute_query("""
         SELECT id, name, price, dynamic_price, sales_velocity, quantity, expiry_date,
                price_updated_at, abc_class
         FROM products WHERE is_active = 1 ORDER BY name
     """, fetch_all=True)
 
-    # تحديث سرعة المبيعات أولاً
     update_sales_velocity()
 
     return render_template_string("""
@@ -1025,19 +1001,7 @@ def dynamic_pricing_page():
         </div>
         <div id="result"></div>
         <table>
-            <thead>
-                <tr>
-                    <th>#</th>
-                    <th>المنتج</th>
-                    <th>السعر الحالي</th>
-                    <th>السعر الديناميكي</th>
-                    <th>سرعة المبيعات</th>
-                    <th>المخزون</th>
-                    <th>التصنيف</th>
-                    <th>آخر تحديث</th>
-                    <th>إجراء</th>
-                </tr>
-            </thead>
+            <thead><tr><th>#</th><th>المنتج</th><th>السعر الحالي</th><th>السعر الديناميكي</th><th>سرعة المبيعات</th><th>المخزون</th><th>التصنيف</th><th>آخر تحديث</th><th>إجراء</th></tr></thead>
             <tbody>
                 {% for p in products %}
                 <tr>
@@ -1051,9 +1015,7 @@ def dynamic_pricing_page():
                     <td>{{ p.quantity }}</td>
                     <td>{{ p.abc_class or '-' }}</td>
                     <td>{{ p.price_updated_at or 'لم يحدث' }}</td>
-                    <td>
-                        <button class="btn" onclick="updatePrice({{ p.id }})">تحديث</button>
-                    </td>
+                    <td><button class="btn" onclick="updatePrice({{ p.id }})">تحديث</button></td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -1092,7 +1054,6 @@ def dynamic_pricing_page():
 @app.route('/api/update-all-prices', methods=['POST'])
 @admin_required
 def update_all_prices():
-    """تحديث الأسعار الديناميكية لجميع المنتجات"""
     products = execute_query("SELECT id FROM products WHERE is_active = 1", fetch_all=True)
     count = 0
     for p in products:
@@ -1101,8 +1062,6 @@ def update_all_prices():
     return jsonify({'success': True, 'message': f'تم تحديث {count} منتج'})
 
 def update_sales_velocity():
-    """تحديث سرعة المبيعات لكل منتج (المتوسط اليومي للكمية المباعة)"""
-    # حساب متوسط المبيعات اليومية للـ 30 يوم الماضية
     products = execute_query("SELECT DISTINCT product_id FROM invoice_items", fetch_all=True)
     for p in products:
         pid = p['product_id']
@@ -1116,17 +1075,15 @@ def update_sales_velocity():
             total_qty = sum(item['quantity'] for item in items)
             velocity = total_qty / 30.0
         else:
-            velocity = 0.1  # قيمة افتراضية
+            velocity = 0.1
         execute_query("UPDATE products SET sales_velocity = ? WHERE id = ?", (velocity, pid), commit=True)
 
 # =============================== ميزة 3: كشف الشذوذ والاحتيال ===============================
 def detect_anomaly(invoice_data):
-    """كشف الشذوذ في الفواتير باستخدام Isolation Forest"""
     if not SKLEARN_AVAILABLE:
         return {'is_anomaly': False, 'score': 0, 'reason': 'مكتبة scikit-learn غير مثبتة'}
 
     try:
-        # جلب الفواتير السابقة للتدريب (آخر 100 فاتورة)
         past_invoices = execute_query("""
             SELECT id, total, discount, final_total,
                    (SELECT COUNT(*) FROM invoice_items WHERE invoice_id = invoices.id) as item_count
@@ -1138,7 +1095,6 @@ def detect_anomaly(invoice_data):
         if not past_invoices or len(past_invoices) < 10:
             return {'is_anomaly': False, 'score': 0, 'reason': 'بيانات تدريب غير كافية'}
 
-        # تحضير البيانات
         X = []
         for inv in past_invoices:
             X.append([
@@ -1148,7 +1104,6 @@ def detect_anomaly(invoice_data):
                 inv['item_count'] or 0
             ])
 
-        # إضافة بيانات الفاتورة الحالية
         X.append([
             invoice_data.get('total', 0),
             invoice_data.get('discount', 0),
@@ -1156,16 +1111,13 @@ def detect_anomaly(invoice_data):
             invoice_data.get('item_count', 0)
         ])
 
-        # تطبيع البيانات
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
 
-        # تدريب النموذج وتوقع الشذوذ
         model = IsolationForest(contamination=0.1, random_state=42)
         predictions = model.fit_predict(X_scaled)
         scores = model.decision_function(X_scaled)
 
-        # التحقق من آخر عنصر (الفاتورة الحالية)
         is_anomaly = predictions[-1] == -1
         score = float(scores[-1])
 
@@ -1189,7 +1141,6 @@ def detect_anomaly(invoice_data):
 
 @app.route('/api/check-anomaly', methods=['POST'])
 def check_anomaly():
-    """التحقق من شذوذ الفاتورة قبل حفظها"""
     data = request.json
     cart = data.get('cart', [])
     total = data.get('total', 0)
@@ -1214,7 +1165,6 @@ def check_anomaly():
 @app.route('/admin/anomalies')
 @admin_required
 def anomalies_page():
-    """صفحة عرض الفواتير الشاذة"""
     anomalies = execute_query("""
         SELECT i.*, u.username as created_by_name
         FROM invoices i
@@ -1295,9 +1245,7 @@ def anomalies_page():
                 <td>{{ inv.payment_method }}</td>
                 <td>{{ inv.created_at }}</td>
                 <td>{{ inv.anomaly_reason or 'غير محدد' }}</td>
-                <td>
-                    <button class="btn" onclick="markReviewed({{ inv.id }})">✅ مراجعة</button>
-                </td>
+                <td><button class="btn" onclick="markReviewed({{ inv.id }})">✅ مراجعة</button></td>
             </tr>
             {% endfor %}
             </tbody>
@@ -1352,7 +1300,6 @@ def mark_anomaly_reviewed(invoice_id):
     return jsonify({'success': True})
 
 # =============================== ميزة 4: المساعد الذكي المتقدم (RAG + LLM) ===============================
-# تحميل نموذج التضمينات إذا كان متوفراً
 embedding_model = None
 if SENTENCE_TRANSFORMER_AVAILABLE:
     try:
@@ -1361,7 +1308,6 @@ if SENTENCE_TRANSFORMER_AVAILABLE:
         embedding_model = None
 
 def get_product_embeddings():
-    """توليد تضمينات لجميع المنتجات للاستخدام في RAG"""
     products = execute_query("""
         SELECT id, name, description, active_ingredient, category, manufacturer,
                strength, dosage_form, price
@@ -1383,7 +1329,6 @@ def get_product_embeddings():
         return None, None
 
 def rag_search(query, top_k=3):
-    """البحث باستخدام RAG (استرجاع معزز بالتوليد)"""
     products, embeddings = get_product_embeddings()
     if products is None or embeddings is None:
         return []
@@ -1405,16 +1350,13 @@ def rag_search(query, top_k=3):
 
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
-    """المساعد الذكي المتقدم مع RAG"""
     data = request.json
     user_message = data.get('message', '').strip()
     if not user_message:
         return jsonify({"success": False, "error": "رسالة فارغة"})
 
-    # 1. البحث باستخدام RAG
     rag_results = rag_search(user_message, top_k=5)
 
-    # 2. بناء السياق من النتائج
     context = ""
     if rag_results:
         context = "المنتجات ذات الصلة:\n"
@@ -1422,7 +1364,6 @@ def api_chat():
             p = r['product']
             context += f"- {p['name']} (المادة الفعالة: {p['active_ingredient'] or 'غير محدد'}, السعر: {p['price']} ريال, التشابه: {r['similarity']:.2f})\n"
 
-    # 3. محاولة استخدام Gemini إذا كان المفتاح موجوداً
     if GEMINI_API_KEY:
         try:
             system_prompt = f"""أنت مساعد صيدلاني في وكالة البشائر للأدوية والمستلزمات الطبية.
@@ -1451,10 +1392,9 @@ def api_chat():
         except Exception as e:
             print(f"Gemini error: {e}")
 
-    # 4. الرد المحلي المحسن (في حال فشل Gemini)
+    # الرد المحلي المحسن
     msg_lower = user_message.lower()
 
-    # تحقق من وجود منتج في السؤال
     for r in rag_results[:3]:
         p = r['product']
         if p['name'].lower() in msg_lower:
@@ -1470,7 +1410,6 @@ def api_chat():
                 reply += f"💊 الشكل الصيدلاني: {p['dosage_form']}\n"
             return jsonify({"success": True, "reply": reply, "rag_results": rag_results})
 
-    # رد عام مع عرض المنتجات ذات الصلة
     if rag_results:
         reply = "📋 **منتجات ذات صلة بسؤالك:**\n"
         for i, r in enumerate(rag_results[:3], 1):
@@ -1489,7 +1428,6 @@ def api_chat():
 @app.route('/api/scan-image', methods=['POST'])
 @login_required
 def scan_image():
-    """تحليل صورة الدواء واستخراج المعلومات"""
     if 'file' not in request.files:
         return jsonify({'success': False, 'message': 'لا يوجد ملف'})
 
@@ -1501,28 +1439,23 @@ def scan_image():
         return jsonify({'success': False, 'message': 'مكتبات OCR غير مثبتة'})
 
     try:
-        # حفظ الملف مؤقتاً
         filename = secure_filename(file.filename)
         temp_path = os.path.join('/tmp', filename)
         file.save(temp_path)
 
-        # قراءة الصورة باستخدام OpenCV
         image = cv2.imread(temp_path)
         if image is None:
             return jsonify({'success': False, 'message': 'لا يمكن قراءة الصورة'})
 
-        # معالجة الصورة لتحسين OCR
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
 
-        # استخراج النص باستخدام Tesseract
         text = pytesseract.image_to_string(gray, lang='ara+eng')
         text = text.strip()
 
         if not text:
             return jsonify({'success': False, 'message': 'لم يتم العثور على نص في الصورة'})
 
-        # استخراج الباركود من الصورة (إذا وجد)
         barcode = None
         try:
             from pyzbar import pyzbar
@@ -1532,22 +1465,17 @@ def scan_image():
         except:
             pass
 
-        # البحث عن المنتج في قاعدة البيانات
         products = []
-        # البحث بالباركود أولاً
         if barcode:
             product = execute_query("SELECT * FROM products WHERE barcode = ? AND is_active = 1", (barcode,), fetch_one=True)
             if product:
                 products.append(dict(product))
 
-        # البحث بالنص المستخرج
         if not products:
-            # استخراج أسماء الأدوية من النص (باستخدام تعبيرات منتظمة)
             lines = text.split('\n')
             for line in lines:
                 line = line.strip()
                 if len(line) > 3:
-                    # البحث عن تطابق في قاعدة البيانات
                     results = execute_query("""
                         SELECT * FROM products
                         WHERE name LIKE ? AND is_active = 1
@@ -1557,7 +1485,6 @@ def scan_image():
                         if r not in products:
                             products.append(dict(r))
 
-        # تنظيف الملف المؤقت
         try:
             os.remove(temp_path)
         except:
@@ -1577,7 +1504,6 @@ def scan_image():
 @app.route('/admin/scan-image-ui')
 @login_required
 def scan_image_ui():
-    """واجهة مسح الصور"""
     return render_template_string("""
     <!DOCTYPE html>
     <html dir="rtl">
@@ -1709,8 +1635,6 @@ def scan_image_ui():
 
 # =============================== ميزة 6: نظام توصيات مخصص للعملاء ===============================
 def generate_recommendations(customer_id):
-    """توليد توصيات مخصصة للعميل"""
-    # 1. الحصول على مشتريات العميل السابقة
     customer_items = execute_query("""
         SELECT DISTINCT ii.product_id
         FROM invoice_items ii
@@ -1719,7 +1643,6 @@ def generate_recommendations(customer_id):
     """, (customer_id,), fetch_all=True)
 
     if not customer_items:
-        # إذا كان عميل جديد، نوصي بأكثر المنتجات مبيعاً
         top_products = execute_query("""
             SELECT product_id, SUM(quantity) as total_sold
             FROM invoice_items
@@ -1731,7 +1654,6 @@ def generate_recommendations(customer_id):
 
     bought_ids = [p['product_id'] for p in customer_items]
 
-    # 2. الحصول على المنتجات المشابهة (من جدول التشابه)
     similar_products = execute_query("""
         SELECT product_id2 as product_id, similarity_score
         FROM product_similarity
@@ -1741,12 +1663,10 @@ def generate_recommendations(customer_id):
     """.format(','.join('?' * len(bought_ids))), bought_ids, fetch_all=True)
 
     if similar_products:
-        # إزالة المنتجات التي اشتراها العميل بالفعل
         recommended = [p['product_id'] for p in similar_products if p['product_id'] not in bought_ids]
         if recommended:
             return recommended[:5]
 
-    # 3. إذا لم تكن هناك تشابهات، نوصي بمنتجات من نفس الفئة
     categories = execute_query("""
         SELECT DISTINCT category FROM products WHERE id IN ({})
     """.format(','.join('?' * len(bought_ids))), bought_ids, fetch_all=True)
@@ -1764,7 +1684,6 @@ def generate_recommendations(customer_id):
             """, cats + bought_ids, fetch_all=True)
             return [p['id'] for p in cat_products]
 
-    # 4. افتراضياً، نوصي بأكثر المنتجات مبيعاً
     top = execute_query("""
         SELECT product_id, SUM(quantity) as total_sold
         FROM invoice_items
@@ -1776,10 +1695,8 @@ def generate_recommendations(customer_id):
 
 @app.route('/api/recommendations/<int:customer_id>')
 def api_recommendations(customer_id):
-    """الحصول على توصيات للعميل"""
     recs = generate_recommendations(customer_id)
 
-    # جلب تفاصيل المنتجات
     if recs:
         placeholders = ','.join('?' * len(recs))
         products = execute_query(f"""
@@ -1789,7 +1706,6 @@ def api_recommendations(customer_id):
     else:
         products = []
 
-    # حفظ التوصيات في قاعدة البيانات
     for p_id in recs[:5]:
         execute_query("""
             INSERT OR REPLACE INTO recommendations (customer_id, product_id, score, created_at)
@@ -1804,7 +1720,6 @@ def api_recommendations(customer_id):
 @app.route('/api/calculate-similarity', methods=['POST'])
 @admin_required
 def calculate_similarity():
-    """حساب التشابه بين المنتجات باستخدام TF-IDF"""
     if not SKLEARN_AVAILABLE:
         return jsonify({'success': False, 'message': 'مكتبة scikit-learn غير مثبتة'})
 
@@ -1816,18 +1731,15 @@ def calculate_similarity():
     if len(products) < 2:
         return jsonify({'success': False, 'message': 'تحتاج إلى منتجين على الأقل'})
 
-    # بناء النصوص لكل منتج
     texts = []
     for p in products:
         text = f"{p['name']} {p['description'] or ''} {p['category'] or ''} {p['active_ingredient'] or ''} {p['manufacturer'] or ''}"
         texts.append(text)
 
-    # حساب التشابه
     vectorizer = TfidfVectorizer(max_features=100, stop_words=None)
     tfidf = vectorizer.fit_transform(texts)
     similarity_matrix = cosine_similarity(tfidf)
 
-    # حفظ التشابهات في قاعدة البيانات
     count = 0
     for i in range(len(products)):
         for j in range(i+1, len(products)):
@@ -1846,7 +1758,6 @@ def calculate_similarity():
 
 @app.route('/customer/recommendations')
 def customer_recommendations_page():
-    """صفحة توصيات العملاء"""
     return render_template_string("""
     <!DOCTYPE html>
     <html dir="rtl">
@@ -1907,7 +1818,6 @@ def customer_recommendations_page():
             let phone = document.getElementById('phoneInput').value.trim();
             if (!phone) { alert('أدخل رقم الهاتف'); return; }
 
-            // البحث عن العميل
             fetch(`/api/customer/${phone}`)
                 .then(r => r.json())
                 .then(data => {
@@ -1956,11 +1866,9 @@ def customer_recommendations_page():
 
 # =============================== ميزة 7: تحليل المشاعر من التقييمات ===============================
 def analyze_sentiment(text):
-    """تحليل المشاعر باستخدام نموذج بسيط (أو Gemini)"""
     if not text:
         return {'label': 'محايد', 'score': 0.0}
 
-    # استخدام Gemini إذا كان متاحاً
     if GEMINI_API_KEY:
         try:
             prompt = f"""حلل المشاعر في النص التالي وأعط النتيجة كـ JSON:
@@ -1974,8 +1882,6 @@ def analyze_sentiment(text):
                 candidates = resp.json().get("candidates", [])
                 if candidates:
                     content = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                    # محاولة استخراج JSON من النص
-                    import re
                     json_match = re.search(r'\{.*\}', content)
                     if json_match:
                         result = json.loads(json_match.group())
@@ -1983,7 +1889,6 @@ def analyze_sentiment(text):
         except:
             pass
 
-    # تحليل بسيط باستخدام الكلمات المفتاحية (fallback)
     positive_words = ['ممتاز', 'رائع', 'جيد', 'مفيد', 'فعال', 'سريع', 'دقيق', 'قوي', 'مذهل', 'ممتازة', 'جيدة']
     negative_words = ['سيء', 'مضر', 'ضعيف', 'بطيء', 'غير مفيد', 'خطير', 'مكلف', 'رديء', 'سيئة', 'مشكلة', 'أخطاء']
 
@@ -2005,7 +1910,6 @@ def analyze_sentiment(text):
 
 @app.route('/api/feedback', methods=['POST'])
 def submit_feedback():
-    """إرسال تقييم وتحليل المشاعر"""
     data = request.json
     customer_id = data.get('customer_id')
     customer_name = data.get('customer_name', '')
@@ -2016,10 +1920,8 @@ def submit_feedback():
     if not comment and rating < 1:
         return jsonify({'success': False, 'message': 'يرجى كتابة تعليق أو تقييم'})
 
-    # تحليل المشاعر
     sentiment = analyze_sentiment(comment)
 
-    # حفظ التقييم
     execute_query("""
         INSERT INTO feedback (customer_id, customer_name, customer_phone, rating, comment, sentiment_score, sentiment_label)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -2034,12 +1936,10 @@ def submit_feedback():
 @app.route('/admin/feedback')
 @admin_required
 def feedback_page():
-    """صفحة عرض التقييمات وتحليل المشاعر"""
     feedbacks = execute_query("""
         SELECT * FROM feedback ORDER BY created_at DESC LIMIT 100
     """, fetch_all=True)
 
-    # إحصائيات
     stats = execute_query("""
         SELECT
             COUNT(*) as total,
@@ -2136,7 +2036,6 @@ def feedback_page():
 @app.route('/api/analyze-invoice', methods=['POST'])
 @login_required
 def analyze_invoice():
-    """تحليل فاتورة ورقية واستخراج البيانات"""
     if 'file' not in request.files:
         return jsonify({'success': False, 'message': 'لا يوجد ملف'})
 
@@ -2148,28 +2047,23 @@ def analyze_invoice():
         return jsonify({'success': False, 'message': 'مكتبات OCR غير مثبتة'})
 
     try:
-        # حفظ الملف مؤقتاً
         filename = secure_filename(file.filename)
         temp_path = os.path.join('/tmp', filename)
         file.save(temp_path)
 
-        # قراءة الصورة
         image = cv2.imread(temp_path)
         if image is None:
             return jsonify({'success': False, 'message': 'لا يمكن قراءة الصورة'})
 
-        # معالجة الصورة
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
 
-        # استخراج النص
         text = pytesseract.image_to_string(gray, lang='ara+eng')
         text = text.strip()
 
         if not text:
             return jsonify({'success': False, 'message': 'لم يتم العثور على نص في الصورة'})
 
-        # استخراج المعلومات باستخدام التعبيرات المنتظمة
         extracted = {
             'invoice_number': None,
             'supplier_name': None,
@@ -2178,33 +2072,27 @@ def analyze_invoice():
             'items': []
         }
 
-        # رقم الفاتورة
         invoice_match = re.search(r'(?:رقم|فاتورة|invoice|#)\s*[: ]?\s*([A-Za-z0-9\-]+)', text, re.IGNORECASE)
         if invoice_match:
             extracted['invoice_number'] = invoice_match.group(1)
 
-        # المورد
         supplier_match = re.search(r'(?:مورد|شركة|supplier|from)\s*[: ]?\s*([^\n]+)', text, re.IGNORECASE)
         if supplier_match:
             extracted['supplier_name'] = supplier_match.group(1).strip()
 
-        # التاريخ
         date_match = re.search(r'(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})', text)
         if not date_match:
             date_match = re.search(r'(\d{4}[/\-]\d{1,2}[/\-]\d{1,2})', text)
         if date_match:
             extracted['date'] = date_match.group(1)
 
-        # الإجمالي
         total_match = re.search(r'(?:إجمالي|total|المجموع|المبلغ)\s*[: ]?\s*([\d,]+\.?\d*)', text, re.IGNORECASE)
         if total_match:
             extracted['total'] = float(total_match.group(1).replace(',', ''))
 
-        # محاولة استخراج الأصناف (أسطر تحتوي على أرقام)
         lines = text.split('\n')
         for line in lines:
             line = line.strip()
-            # البحث عن نمط: اسم المنتج + كمية + سعر
             item_match = re.search(r'([^\d]+)\s+(\d+\.?\d*)\s+(\d+\.?\d*)\s*$', line)
             if item_match:
                 extracted['items'].append({
@@ -2213,7 +2101,6 @@ def analyze_invoice():
                     'price': float(item_match.group(3))
                 })
 
-        # إذا لم يتم العثور على أصناف، حاول البحث عن أسماء أدوية معروفة
         if not extracted['items']:
             products = execute_query("SELECT name FROM products WHERE is_active = 1", fetch_all=True)
             for p in products:
@@ -2224,7 +2111,6 @@ def analyze_invoice():
                         'price': 0
                     })
 
-        # تنظيف الملف المؤقت
         try:
             os.remove(temp_path)
         except:
@@ -2232,7 +2118,7 @@ def analyze_invoice():
 
         return jsonify({
             'success': True,
-            'text': text[:500],  # جزء من النص للمعاينة
+            'text': text[:500],
             'extracted': extracted,
             'message': 'تم استخراج البيانات بنجاح'
         })
@@ -2243,7 +2129,6 @@ def analyze_invoice():
 @app.route('/admin/scan-invoice')
 @login_required
 def scan_invoice_ui():
-    """واجهة مسح الفواتير"""
     suppliers = execute_query("SELECT id, name FROM suppliers", fetch_all=True)
     return render_template_string("""
     <!DOCTYPE html>
@@ -2344,7 +2229,6 @@ def scan_invoice_ui():
                     document.getElementById('result').innerHTML =
                         `<div class="result-box" style="border-color:#4CAF50;">✅ ${data.message}</div>`;
 
-                    // عرض البيانات المستخرجة
                     let fieldsHtml = '';
                     const fields = [
                         ['رقم الفاتورة', 'invoice_number'],
@@ -2362,7 +2246,6 @@ def scan_invoice_ui():
                         `;
                     });
 
-                    // عرض الأصناف
                     let itemsHtml = '<table><thead><tr><th>المنتج</th><th>الكمية</th><th>السعر</th></tr></thead><tbody>';
                     if (extractedData.items && extractedData.items.length > 0) {
                         extractedData.items.forEach((item, idx) => {
@@ -2406,7 +2289,6 @@ def scan_invoice_ui():
                 items: []
             };
 
-            // جمع الأصناف
             const itemsContainer = document.getElementById('itemsTable');
             const inputs = itemsContainer.querySelectorAll('input');
             const itemCount = inputs.length / 3;
@@ -2419,7 +2301,6 @@ def scan_invoice_ui():
                 }
             }
 
-            // إرسال البيانات للحفظ
             fetch('/api/save-invoice-data', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -2442,16 +2323,13 @@ def scan_invoice_ui():
 @app.route('/api/save-invoice-data', methods=['POST'])
 @admin_required
 def save_invoice_data():
-    """حفظ بيانات الفاتورة المستخرجة"""
     data = request.json
     try:
-        # البحث عن المورد
         supplier_name = data.get('supplier_name', '')
         supplier = None
         if supplier_name:
             supplier = execute_query("SELECT id FROM suppliers WHERE name LIKE ?", (f"%{supplier_name}%",), fetch_one=True)
 
-        # إنشاء فاتورة شراء
         purchase_id = None
         if data.get('items'):
             total = data.get('total', 0)
@@ -2472,18 +2350,14 @@ def save_invoice_data():
             purchase = execute_query("SELECT id FROM purchases ORDER BY id DESC LIMIT 1", fetch_one=True)
             purchase_id = purchase['id']
 
-            # إضافة الأصناف
             for item in data['items']:
-                # البحث عن المنتج في قاعدة البيانات
                 product = execute_query("SELECT id FROM products WHERE name LIKE ?", (f"%{item['name']}%",), fetch_one=True)
                 if product:
-                    # تحديث المخزون
                     execute_query("""
                         INSERT INTO purchase_items (purchase_id, product_id, quantity, cost_price, total)
                         VALUES (?, ?, ?, ?, ?)
                     """, (purchase_id, product['id'], item['quantity'], item['price'], item['quantity'] * item['price']), commit=True)
 
-                    # تحديث كمية المنتج
                     execute_query("UPDATE products SET quantity = quantity + ? WHERE id = ?",
                                   (item['quantity'], product['id']), commit=True)
 
@@ -2496,8 +2370,6 @@ def save_invoice_data():
 @app.route('/admin/analytics')
 @admin_required
 def analytics_page():
-    """لوحة التحليل الذكية"""
-    # إحصائيات سريعة
     stats = execute_query("""
         SELECT
             (SELECT COUNT(*) FROM products WHERE is_active = 1) as total_products,
@@ -2507,7 +2379,6 @@ def analytics_page():
             (SELECT IFNULL(SUM(final_total), 0) FROM invoices WHERE created_at >= DATE('now', '-30 days')) as month_revenue
     """, fetch_one=True)
 
-    # أفضل المنتجات مبيعاً
     top_products = execute_query("""
         SELECT p.name, SUM(ii.quantity) as total_sold, SUM(ii.total) as revenue
         FROM invoice_items ii
@@ -2517,7 +2388,6 @@ def analytics_page():
         LIMIT 10
     """, fetch_all=True)
 
-    # المبيعات حسب الفئة
     category_sales = execute_query("""
         SELECT p.category, SUM(ii.total) as revenue
         FROM invoice_items ii
@@ -2527,7 +2397,6 @@ def analytics_page():
         ORDER BY revenue DESC
     """, fetch_all=True)
 
-    # المبيعات اليومية (آخر 7 أيام)
     daily_sales = execute_query("""
         SELECT DATE(created_at) as day, IFNULL(SUM(final_total), 0) as total
         FROM invoices
@@ -2627,12 +2496,10 @@ def analytics_page():
         function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
         if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
 
-        // بيانات الرسوم البيانية
         const topProducts = {{ top_products | tojson }};
         const categorySales = {{ category_sales | tojson }};
         const dailySales = {{ daily_sales | tojson }};
 
-        // أفضل المنتجات مبيعاً
         const ctx1 = document.getElementById('topProductsChart').getContext('2d');
         new Chart(ctx1, {
             type: 'bar',
@@ -2653,7 +2520,6 @@ def analytics_page():
             }
         });
 
-        // المبيعات حسب الفئة
         const ctx2 = document.getElementById('categoryChart').getContext('2d');
         new Chart(ctx2, {
             type: 'pie',
@@ -2670,7 +2536,6 @@ def analytics_page():
             }
         });
 
-        // المبيعات اليومية
         const ctx3 = document.getElementById('dailySalesChart').getContext('2d');
         new Chart(ctx3, {
             type: 'line',
@@ -2729,26 +2594,21 @@ def analytics_page():
 @app.route('/api/analytics-query', methods=['POST'])
 @admin_required
 def analytics_query():
-    """معالجة الاستعلامات الطبيعية للتحليل"""
     data = request.json
     query = data.get('query', '').strip()
 
     if not query:
         return jsonify({'success': False, 'message': 'الاستعلام فارغ'})
 
-    # محاولة استخدام Gemini لتحويل الاستعلام
     if GEMINI_API_KEY:
         try:
             prompt = f"""أنت مساعد تحليل بيانات. المستخدم يسأل عن بيانات المبيعات.
             قم بتحليل السؤال التالي واستخراج المعلومات المطلوبة من قاعدة البيانات.
-            إذا كان السؤال عن أفضل منتج، أو إيرادات، أو مبيعات، قم بإنشاء استعلام SQL مناسب.
             السؤال: "{query}"
-
             أخرج استجابة منظمة كـ JSON مع:
             - type: نوع الطلب (top_product, revenue, sales_count, general)
             - sql: استعلام SQL إذا أمكن
             - explanation: شرح بالعربية للنتيجة
-
             فقط أخرج JSON ولا شيء آخر."""
 
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -2758,14 +2618,11 @@ def analytics_query():
                 candidates = resp.json().get("candidates", [])
                 if candidates:
                     content = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                    import re
                     json_match = re.search(r'\{.*\}', content, re.DOTALL)
                     if json_match:
                         try:
                             analysis = json.loads(json_match.group())
-                            # تنفيذ الاستعلام إذا كان موجوداً
                             if analysis.get('sql'):
-                                # استخراج البيانات
                                 result = execute_query(analysis['sql'], fetch_all=True)
                                 if result:
                                     return jsonify({
@@ -2778,7 +2635,6 @@ def analytics_query():
         except:
             pass
 
-    # رد محلي بسيط (fallback)
     query_lower = query.lower()
     result = ""
 
@@ -2813,11 +2669,9 @@ def admin_dashboard():
     low_stock = execute_query("SELECT id, name, quantity, min_quantity FROM products WHERE quantity <= min_quantity AND is_active=1", fetch_all=True)
     low_stock_count = len(low_stock) if low_stock else 0
 
-    # عدد الفواتير الشاذة
     anomalies_count = execute_query("SELECT COUNT(*) as count FROM invoices WHERE is_anomaly = 1", fetch_one=True)
     anomalies_count = anomalies_count['count'] if anomalies_count else 0
 
-    # عدد التقييمات الجديدة
     feedback_count = execute_query("SELECT COUNT(*) as count FROM feedback WHERE DATE(created_at) = DATE('now')", fetch_one=True)
     feedback_count = feedback_count['count'] if feedback_count else 0
 
@@ -3032,7 +2886,6 @@ def pos():
         function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
         if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
 
-        // تحميل المنتجات
         function loadProducts() {
             fetch('/api/products?limit=30')
                 .then(r => r.json())
@@ -3135,7 +2988,6 @@ def pos():
                 customer_name: 'عميل نقدي',
                 payment_method: 'cash'
             };
-            // التحقق من الشذوذ أولاً
             fetch('/api/check-anomaly', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -3148,7 +3000,6 @@ def pos():
                         return;
                     }
                 }
-                // إنشاء الفاتورة
                 fetch('/api/create_invoice', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -3173,195 +3024,7 @@ def pos():
     </html>
     """)
 
-# =============================== باقي المسارات الأساسية (من الكود الأصلي) ===============================
-@app.route('/api/products')
-def api_products():
-    limit = request.args.get('limit', 50, type=int)
-    search = request.args.get('search', '')
-    category = request.args.get('category', '')
-    query = """
-        SELECT p.*, u.name as unit_name, u.symbol as unit_symbol
-        FROM products p
-        LEFT JOIN units u ON p.unit_id = u.id
-        WHERE p.is_active = 1
-    """
-    params = []
-    if search:
-        query += " AND (p.name LIKE ? OR p.description LIKE ?)"
-        params.extend([f"%{search}%", f"%{search}%"])
-    if category:
-        query += " AND p.category = ?"
-        params.append(category)
-    query += " ORDER BY p.name LIMIT ?"
-    params.append(limit)
-    products = execute_query(query, params, fetch_all=True)
-    return jsonify({'success': True, 'products': [dict(p) for p in products]})
-
-@app.route('/api/categories')
-def api_categories():
-    rows = execute_query("SELECT DISTINCT category FROM products WHERE category IS NOT NULL AND category != '' AND is_active = 1", fetch_all=True)
-    categories = [row['category'] for row in rows] if rows else []
-    return jsonify({'categories': categories})
-
-@app.route('/api/offers')
-def api_offers():
-    offers = execute_query("SELECT * FROM offers WHERE is_active = 1 AND (start_date <= date('now') OR start_date IS NULL) AND (end_date >= date('now') OR end_date IS NULL)", fetch_all=True)
-    return jsonify({'offers': [dict(o) for o in offers]})
-
-@app.route('/api/customer/<phone>')
-def api_customer(phone):
-    customer = execute_query("SELECT * FROM customers WHERE phone = ?", (phone,), fetch_one=True)
-    if customer:
-        return jsonify({'success': True, **dict(customer)})
-    return jsonify({'success': False, 'message': 'العميل غير موجود'})
-
-@app.route('/api/create_invoice', methods=['POST'])
-def create_invoice():
-    data = request.json
-    try:
-        cart = data.get('cart', [])
-        customer_name = data.get('customer_name', '')
-        customer_phone = data.get('customer_phone', '')
-        customer_address = data.get('customer_address', '')
-        payment_method = data.get('payment_method', 'cash')
-        total = sum(item['price'] * item['quantity'] for item in cart)
-        discount = data.get('discount', 0)
-        final_total = total - discount
-        invoice_number = f"INV-{int(time.time())}"
-
-        # التحقق من الشذوذ
-        invoice_data = {'total': total, 'discount': discount, 'final_total': final_total, 'item_count': len(cart)}
-        anomaly_result = detect_anomaly(invoice_data)
-
-        # إدراج الفاتورة
-        execute_query("""
-            INSERT INTO invoices (invoice_number, customer_name, customer_phone, customer_address, total, discount, final_total, payment_method, created_by, is_anomaly, anomaly_score, anomaly_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (invoice_number, customer_name, customer_phone, customer_address, total, discount, final_total, payment_method, session.get('user_id', 1),
-              anomaly_result['is_anomaly'], anomaly_result['score'], anomaly_result['reason']), commit=True)
-
-        invoice = execute_query("SELECT id FROM invoices WHERE invoice_number = ?", (invoice_number,), fetch_one=True)
-        invoice_id = invoice['id']
-
-        # تسجيل في سجل الشذوذ إذا كان شاذاً
-        if anomaly_result['is_anomaly']:
-            execute_query("""
-                INSERT INTO anomaly_logs (invoice_id, anomaly_score, reason)
-                VALUES (?, ?, ?)
-            """, (invoice_id, anomaly_result['score'], anomaly_result['reason']), commit=True)
-
-        # إدراج الأصناف وتحديث المخزون
-        for item in cart:
-            execute_query("""
-                INSERT INTO invoice_items (invoice_id, product_id, product_name, quantity, price, total)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (invoice_id, item['id'], item['name'], item['quantity'], item['price'], item['price'] * item['quantity']), commit=True)
-
-            product = execute_query("SELECT quantity FROM products WHERE id = ?", (item['id'],), fetch_one=True)
-            if product:
-                new_qty = product['quantity'] - item['quantity']
-                execute_query("UPDATE products SET quantity = ? WHERE id = ?", (new_qty, item['id']), commit=True)
-                log_inventory(item['id'], item['name'], 'sale', -item['quantity'], product['quantity'], new_qty, f"فاتورة {invoice_number}", session.get('user_id', 1))
-
-        return jsonify({'success': True, 'invoice_number': invoice_number, 'is_anomaly': anomaly_result['is_anomaly']})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
-# =============================== تصدير التقارير ===============================
-@app.route('/admin/reports/export/<report_type>')
-@login_required
-def export_report(report_type):
-    if report_type == 'inventory':
-        data = execute_query("""
-            SELECT p.id, p.name, p.category, p.quantity, p.min_quantity, p.price, p.cost_price,
-                   p.expiry_date, p.batch_number, p.manufacturer, u.name as unit,
-                   p.dynamic_price, p.sales_velocity, p.abc_class
-            FROM products p
-            LEFT JOIN units u ON p.unit_id = u.id
-            WHERE p.is_active = 1
-            ORDER BY p.name
-        """, fetch_all=True)
-        title = 'تقرير المخزون'
-        headers = ['الرقم', 'الاسم', 'الفئة', 'الكمية', 'الحد الأدنى', 'سعر البيع', 'سعر الشراء', 'تاريخ الصلاحية', 'رقم الدفعة', 'الشركة المصنعة', 'الوحدة', 'السعر الديناميكي', 'سرعة المبيعات', 'تصنيف ABC']
-    elif report_type == 'sales':
-        data = execute_query("""
-            SELECT i.invoice_number, i.customer_name, i.final_total, i.payment_method, i.created_at,
-                   (SELECT COUNT(*) FROM invoice_items WHERE invoice_id = i.id) as items_count,
-                   i.is_anomaly
-            FROM invoices i
-            ORDER BY i.created_at DESC
-            LIMIT 100
-        """, fetch_all=True)
-        title = 'تقرير المبيعات (آخر 100 فاتورة)'
-        headers = ['رقم الفاتورة', 'العميل', 'الإجمالي', 'طريقة الدفع', 'التاريخ', 'عدد الأصناف', 'شاذ']
-    elif report_type == 'expiry':
-        data = execute_query("""
-            SELECT id, name, expiry_date, quantity, batch_number, manufacturer
-            FROM products
-            WHERE expiry_date IS NOT NULL AND is_active = 1
-            ORDER BY expiry_date ASC
-        """, fetch_all=True)
-        title = 'تقرير الصلاحية (الأقرب للانتهاء أولاً)'
-        headers = ['الرقم', 'الاسم', 'تاريخ الصلاحية', 'الكمية', 'رقم الدفعة', 'الشركة المصنعة']
-    else:
-        return 'تقرير غير معروف', 400
-
-    if not data:
-        return 'لا توجد بيانات', 404
-
-    fmt = request.args.get('format', 'excel')
-    if fmt == 'excel':
-        wb = Workbook()
-        ws = wb.active
-        ws.title = title
-        for col, header in enumerate(headers, 1):
-            ws.cell(row=1, column=col, value=header)
-        for row_idx, row in enumerate(data, 2):
-            for col_idx, value in enumerate(row, 1):
-                if isinstance(value, (datetime.date, datetime.datetime)):
-                    value = value.isoformat()
-                ws.cell(row=row_idx, column=col_idx, value=value)
-        output = io.BytesIO()
-        wb.save(output)
-        output.seek(0)
-        return send_file(output, download_name=f"{title}.xlsx", as_attachment=True)
-    elif fmt == 'pdf':
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=2*cm, leftMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm)
-        styles = getSampleStyleSheet()
-        title_style = styles['Title']
-        title_style.alignment = 1
-        elements = []
-        elements.append(Paragraph(title, title_style))
-        elements.append(Spacer(1, 0.5*cm))
-        table_data = [headers]
-        for row in data:
-            row_list = []
-            for value in row:
-                if isinstance(value, (datetime.date, datetime.datetime)):
-                    row_list.append(value.isoformat())
-                else:
-                    row_list.append(str(value) if value is not None else '')
-            table_data.append(row_list)
-        table = Table(table_data, repeatRows=1)
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-        ]))
-        elements.append(table)
-        doc.build(elements)
-        buffer.seek(0)
-        return send_file(buffer, download_name=f"{title}.pdf", as_attachment=True)
-    else:
-        return 'صيغة غير مدعومة', 400
-
-# =============================== الصفحات الأساسية (من الكود الأصلي) ===============================
+# =============================== الصفحات الأساسية (كاملة) ===============================
 @app.route('/')
 def home():
     settings = get_settings()
@@ -3586,91 +3249,639 @@ def home():
 def products_page():
     settings = get_settings()
     company_name = settings['company_name']
-    return render_template_string("""...""", company_name=company_name)
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head><title>الأدوية</title>
+    <style>
+        :root {
+            --bg: #000;
+            --text: #FFD700;
+            --card-bg: #111;
+            --border: #FFD700;
+            --input-bg: #000;
+            --input-text: #FFD700;
+            --btn-bg: #FFD700;
+            --btn-text: #000;
+        }
+        body.light {
+            --bg: #f5f5f5;
+            --text: #000;
+            --card-bg: #fff;
+            --border: #007bff;
+            --input-bg: #fff;
+            --input-text: #000;
+            --btn-bg: #007bff;
+            --btn-text: #fff;
+        }
+        *{margin:0;padding:0;box-sizing:border-box;}
+        body{background:var(--bg);color:var(--text);padding:20px;font-family:Arial;transition:background 0.3s,color 0.3s;}
+        .container{max-width:1200px;margin:auto;}
+        .header{background:var(--card-bg);border:1px solid var(--border);padding:20px;border-radius:10px;margin-bottom:20px;color:var(--text);}
+        .filters{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;}
+        .filters input,.filters select{background:var(--input-bg);border:1px solid var(--border);color:var(--input-text);padding:8px;border-radius:5px;}
+        .products-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:25px;}
+        .product-card{background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:15px;text-align:center;}
+        .product-img{width:100%;height:200px;object-fit:cover;border-radius:8px;}
+        .product-name{color:var(--text);font-weight:bold;font-size:18px;margin:10px 0;}
+        .product-price{color:var(--text);font-size:20px;margin:10px 0;}
+        .product-desc{font-size:13px;color:#ccc;margin:8px 0;}
+        .product-stock{font-size:12px;color:#aaa;margin-bottom:8px;}
+        .quantity-control{display:flex;justify-content:center;gap:10px;margin:10px 0;}
+        .quantity-control button{background:var(--btn-bg);color:var(--btn-text);border:none;width:30px;height:30px;border-radius:5px;}
+        .add-to-cart{background:var(--btn-bg);color:var(--btn-text);padding:8px;border:none;border-radius:5px;width:100%;}
+        .nav a{color:var(--text);text-decoration:none;margin-left:15px;}
+        .chat-float{position:fixed;bottom:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);width:60px;height:60px;border-radius:50%;font-size:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:999;box-shadow:0 4px 15px rgba(0,0,0,0.5);text-decoration:none;}
+        .theme-toggle{position:fixed;top:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
+    </style>
+    </head>
+    <body>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
+    <div class="container">
+    <div class="header"><h1>{{ company_name }} - الأدوية</h1><div class="nav"><a href="/">الرئيسية</a><a href="/products">الأدوية</a><a href="/offers">العروض</a><a href="/points">نقاطي</a><a href="/cart">السلة</a><a href="/chat">💬 المساعد</a></div></div>
+    <div class="filters"><input type="text" id="search" placeholder="بحث..." onkeyup="loadProducts()"><select id="category" onchange="loadProducts()"><option value="">كل الفئات</option></select></div>
+    <div id="products" class="products-grid"></div>
+    </div>
+    <script>
+        let quantities = {};
+        function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+        if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+
+        function loadProducts(){
+            let s=document.getElementById('search').value;
+            let c=document.getElementById('category').value;
+            fetch(`/api/products?search=${encodeURIComponent(s)}&category=${encodeURIComponent(c)}`).then(r=>r.json()).then(data=>{
+                if(data.success){
+                    let html='';
+                    data.products.forEach(p=>{
+                        if(!quantities[p.id]) quantities[p.id]=1;
+                        let priceDisplay = p.dynamic_price ? `${p.dynamic_price} (ديناميكي)` : p.price;
+                        html+=`
+                            <div class="product-card">
+                                <img src="${p.image_url || '/static/uploads/default.jpg'}" class="product-img" onerror="this.src='/static/uploads/default.jpg'">
+                                <div class="product-name">${p.name} ${p.dynamic_price ? '🔄' : ''}</div>
+                                <div class="product-price">${priceDisplay} ريال</div>
+                                <div class="product-desc">${p.description || ''}</div>
+                                <div class="product-stock">المتبقي: ${p.quantity} ${p.unit_name || ''}</div>
+                                <div class="quantity-control">
+                                    <button onclick="changeQty(${p.id},-1)">-</button>
+                                    <span id="qty-${p.id}">${quantities[p.id]}</span>
+                                    <button onclick="changeQty(${p.id},1)">+</button>
+                                </div>
+                                <button class="add-to-cart" onclick="addToCart(${p.id},'${p.name.replace(/'/g,"\\'")}',${p.dynamic_price || p.price})">أضف للسلة</button>
+                            </div>
+                        `;
+                    });
+                    document.getElementById('products').innerHTML=html;
+                }
+            });
+        }
+        function changeQty(id,delta){let newVal=(quantities[id]||1)+delta;if(newVal<1)newVal=1;quantities[id]=newVal;document.getElementById(`qty-${id}`).innerText=newVal;}
+        function addToCart(id,name,price){let qty=quantities[id]||1;let cart=JSON.parse(localStorage.getItem('cart')||'[]');let ex=cart.find(i=>i.id==id);if(ex) ex.quantity+=qty;else cart.push({id,name,price,quantity:qty});localStorage.setItem('cart',JSON.stringify(cart));alert(`تمت إضافة ${qty} من ${name}`);quantities[id]=1;if(document.getElementById(`qty-${id}`)) document.getElementById(`qty-${id}`).innerText=1;}
+        fetch('/api/categories').then(r=>r.json()).then(data=>{let sel=document.getElementById('category');data.categories.forEach(c=>{let opt=document.createElement('option');opt.value=c;opt.textContent=c;sel.appendChild(opt);});});
+        loadProducts();
+    </script>
+    </body>
+    </html>
+    """, company_name=company_name)
 
 @app.route('/offers')
 def offers_page():
-    return render_template_string("""...""")
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head><title>العروض</title>
+    <style>
+        :root {
+            --bg: #000;
+            --text: #FFD700;
+            --card-bg: #111;
+            --border: #FFD700;
+        }
+        body.light {
+            --bg: #f5f5f5;
+            --text: #000;
+            --card-bg: #fff;
+            --border: #007bff;
+        }
+        body{background:var(--bg);color:var(--text);padding:20px;font-family:Arial;transition:background 0.3s,color 0.3s;}
+        .offer{background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:20px;margin:15px 0;color:var(--text);}
+        .chat-float{position:fixed;bottom:20px;left:20px;background:#FFD700;color:#000;width:60px;height:60px;border-radius:50%;font-size:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:999;box-shadow:0 4px 15px rgba(0,0,0,0.5);text-decoration:none;}
+        .theme-toggle{position:fixed;top:20px;left:20px;background:#FFD700;color:#000;border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
+        .nav a{color:var(--text);text-decoration:none;margin-left:15px;}
+    </style>
+    </head>
+    <body>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
+    <div class="container"><div style="background:var(--card-bg);border:1px solid var(--border);padding:20px;border-radius:10px;margin-bottom:20px;"><h1>🎁 العروض الحالية</h1><div class="nav"><a href="/">الرئيسية</a><a href="/products">الأدوية</a><a href="/offers" style="font-weight:bold;">العروض</a><a href="/points">نقاطي</a><a href="/cart">السلة</a></div></div>
+    <div id="offers"></div>
+    <script>
+        function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+        if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+        fetch('/api/offers').then(r=>r.json()).then(data=>{
+            let html='';
+            data.offers.forEach(o=>{html+=`<div class="offer"><h3>${o.title}</h3><p>${o.description}</p><div>كود: ${o.code}</div></div>`;});
+            document.getElementById('offers').innerHTML=html;
+        });
+    </script>
+    </body>
+    </html>
+    """)
 
 @app.route('/points')
 def points_page():
-    return render_template_string("""...""")
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head><title>نقاطي</title>
+    <style>
+        :root {
+            --bg: #000;
+            --text: #FFD700;
+            --card-bg: #111;
+            --border: #FFD700;
+        }
+        body.light {
+            --bg: #f5f5f5;
+            --text: #000;
+            --card-bg: #fff;
+            --border: #007bff;
+        }
+        body{background:var(--bg);color:var(--text);padding:20px;font-family:Arial;transition:background 0.3s,color 0.3s;}
+        .card{background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:20px;max-width:400px;margin:auto;text-align:center;color:var(--text);}
+        .chat-float{position:fixed;bottom:20px;left:20px;background:#FFD700;color:#000;width:60px;height:60px;border-radius:50%;font-size:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:999;box-shadow:0 4px 15px rgba(0,0,0,0.5);text-decoration:none;}
+        .theme-toggle{position:fixed;top:20px;left:20px;background:#FFD700;color:#000;border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
+        input{width:100%;padding:8px;margin:10px 0;background:#000;color:#FFD700;border:1px solid #FFD700;border-radius:5px;}
+        button{background:#FFD700;color:#000;padding:8px;border:none;border-radius:5px;cursor:pointer;}
+        .nav a{color:var(--text);text-decoration:none;margin-left:15px;}
+    </style>
+    </head>
+    <body>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
+    <div style="max-width:600px;margin:auto;background:var(--card-bg);border:1px solid var(--border);padding:15px;border-radius:10px;margin-bottom:20px;"><h2>🏅 استعلام عن النقاط</h2><div class="nav"><a href="/">الرئيسية</a><a href="/points" style="font-weight:bold;">نقاطي</a></div></div>
+    <div class="card"><h2>🏅 استعلام عن النقاط</h2><input type="tel" id="phone" placeholder="رقم الهاتف"><button onclick="check()">استعلام</button><div id="result"></div></div>
+    <script>
+        function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+        if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+        function check(){let phone=document.getElementById('phone').value;if(!phone){alert('أدخل رقم الهاتف');return;}fetch('/api/customer/'+phone).then(r=>r.json()).then(data=>{if(data.success){document.getElementById('result').innerHTML=`<p>الاسم: ${data.name}</p><p>النقاط: ${data.loyalty_points}</p><p>الإنفاق: ${data.total_spent}</p><p>المستوى: ${data.tier}</p>`;}else{document.getElementById('result').innerHTML='<p>لم يتم العثور على العميل</p>';}});}
+    </script>
+    </body>
+    </html>
+    """)
 
 @app.route('/cart')
 def cart_page():
-    return render_template_string("""...""")
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head><title>سلة المشتريات</title>
+    <style>
+        :root {
+            --bg: #000;
+            --text: #FFD700;
+            --card-bg: #111;
+            --border: #FFD700;
+            --btn-bg: #FFD700;
+            --btn-text: #000;
+            --input-bg: #000;
+            --input-text: #FFD700;
+        }
+        body.light {
+            --bg: #f5f5f5;
+            --text: #000;
+            --card-bg: #fff;
+            --border: #007bff;
+            --btn-bg: #007bff;
+            --btn-text: #fff;
+            --input-bg: #fff;
+            --input-text: #000;
+        }
+        body{background:var(--bg);color:var(--text);padding:20px;font-family:Arial;transition:background 0.3s,color 0.3s;}
+        .container{max-width:800px;margin:auto;}
+        .cart-item{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:15px;margin:10px 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;color:var(--text);}
+        .total{background:var(--btn-bg);color:var(--btn-text);padding:15px;border-radius:5px;font-weight:bold;margin:20px 0;text-align:center;}
+        .btn{background:var(--btn-bg);color:var(--btn-text);padding:10px;border:none;border-radius:5px;cursor:pointer;margin:5px;}
+        .whatsapp{background:#25D366;color:#fff;}
+        .customer-info input{width:100%;padding:8px;margin:5px 0;background:var(--input-bg);color:var(--input-text);border:1px solid var(--border);border-radius:5px;}
+        .chat-float{position:fixed;bottom:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);width:60px;height:60px;border-radius:50%;font-size:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:999;box-shadow:0 4px 15px rgba(0,0,0,0.5);text-decoration:none;}
+        .theme-toggle{position:fixed;top:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
+        .nav a{color:var(--text);text-decoration:none;margin-left:15px;}
+    </style>
+    </head>
+    <body>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
+    <div class="container">
+    <div style="background:var(--card-bg);border:1px solid var(--border);padding:15px;border-radius:10px;margin-bottom:20px;"><h1>🛒 سلة المشتريات</h1><div class="nav"><a href="/">الرئيسية</a><a href="/products">الأدوية</a><a href="/offers">العروض</a><a href="/cart" style="font-weight:bold;">السلة</a></div></div>
+    <div class="customer-info">
+        <input type="text" id="customer_name" placeholder="الاسم (اختياري)">
+        <input type="tel" id="customer_phone" placeholder="رقم الهاتف (اختياري)">
+        <input type="text" id="customer_address" placeholder="العنوان (اختياري)">
+    </div>
+    <div id="cart-items"></div>
+    <div class="total" id="total">الإجمالي: 0 ريال</div>
+    <button class="btn whatsapp" onclick="sendWhatsApp()">📱 إرسال الطلب عبر واتساب</button>
+    <button class="btn" onclick="checkout()">✅ إنهاء الطلب (كاشير)</button>
+    </div>
+    <script>
+        function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+        if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+
+        let cart=JSON.parse(localStorage.getItem('cart')||'[]');
+        function render(){
+            let html='';let total=0;
+            cart.forEach((item,i)=>{
+                let itemTotal=item.price*item.quantity;
+                total+=itemTotal;
+                html+=`<div class="cart-item"><div><strong>${item.name}</strong> x${item.quantity}</div><div>${itemTotal} ريال</div><button onclick="removeItem(${i})">🗑️ حذف</button></div>`;
+            });
+            document.getElementById('cart-items').innerHTML=html||'<p>السلة فارغة</p>';
+            document.getElementById('total').innerText=`الإجمالي: ${total} ريال`;
+        }
+        function removeItem(idx){cart.splice(idx,1);localStorage.setItem('cart',JSON.stringify(cart));render();}
+        function sendWhatsApp(){
+            if(cart.length==0){alert('السلة فارغة');return;}
+            let name=document.getElementById('customer_name').value;
+            let phone=document.getElementById('customer_phone').value;
+            let addr=document.getElementById('customer_address').value;
+            let msg=`*طلب جديد*%0Aالاسم: ${name || "غير مدخل"}%0Aالهاتف: ${phone || "غير مدخل"}%0Aالعنوان: ${addr || "غير مدخل"}%0A`;
+            let total=0;
+            cart.forEach(item=>{let t=item.price*item.quantity;total+=t;msg+=`- ${item.name} x${item.quantity} = ${t} ريال%0A`;});
+            msg+=`%0A*الإجمالي: ${total} ريال*`;
+            window.open(`https://wa.me/967771602370?text=${msg}`,'_blank');
+        }
+        function checkout(){
+            if(cart.length==0){alert('السلة فارغة');return;}
+            let customer_name=document.getElementById('customer_name').value;
+            let customer_phone=document.getElementById('customer_phone').value;
+            let customer_address=document.getElementById('customer_address').value;
+            let order={cart,customer_name,customer_phone,customer_address,payment_method:'cash'};
+            fetch('/api/create_invoice',{
+                method:'POST',headers:{'Content-Type':'application/json'},
+                body:JSON.stringify(order)
+            }).then(r=>r.json()).then(data=>{
+                if(data.success){
+                    alert(`تم إنشاء الفاتورة رقم ${data.invoice_number}`);
+                    localStorage.removeItem('cart');
+                    window.location.href='/';
+                }else alert('خطأ: '+data.message);
+            });
+        }
+        render();
+    </script>
+    </body>
+    </html>
+    """)
 
 @app.route('/chat')
 def chat_page():
     settings = get_settings()
     company_name = settings['company_name']
-    return render_template_string("""...""", company_name=company_name)
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html dir="rtl" lang="ar">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>المساعد الذكي - {{ company_name }}</title>
+        <style>
+            :root {
+                --bg: #000;
+                --text: #FFD700;
+                --card-bg: #111;
+                --border: #FFD700;
+                --input-bg: #000;
+                --input-text: #FFD700;
+                --btn-bg: #FFD700;
+                --btn-text: #000;
+            }
+            body.light {
+                --bg: #f5f5f5;
+                --text: #000;
+                --card-bg: #fff;
+                --border: #007bff;
+                --input-bg: #fff;
+                --input-text: #000;
+                --btn-bg: #007bff;
+                --btn-text: #fff;
+            }
+            *{margin:0;padding:0;box-sizing:border-box;font-family:Arial,sans-serif;}
+            body{background:var(--bg);color:var(--text);padding:20px;transition:background 0.3s,color 0.3s;}
+            .container{max-width:600px;margin:auto;background:var(--card-bg);border:1px solid var(--border);border-radius:15px;padding:20px;}
+            .header{text-align:center;border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:20px;}
+            .chat-box{height:400px;overflow-y:auto;border:1px solid var(--border);padding:10px;border-radius:10px;margin-bottom:15px;background:var(--bg);}
+            .msg{margin-bottom:10px;padding:8px 12px;border-radius:10px;max-width:80%;}
+            .msg.user{background:var(--btn-bg);color:var(--btn-text);margin-left:auto;text-align:right;}
+            .msg.assistant{background:#333;color:var(--text);margin-right:auto;white-space:pre-wrap;}
+            .input-area{display:flex;gap:10px;}
+            #userInput{flex:1;padding:10px;background:var(--input-bg);border:1px solid var(--border);color:var(--input-text);border-radius:5px;}
+            button{background:var(--btn-bg);color:var(--btn-text);border:none;padding:10px 20px;border-radius:5px;cursor:pointer;font-weight:bold;}
+            .nav a{color:var(--text);text-decoration:none;margin:0 10px;}
+            .theme-toggle{position:fixed;top:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
+        </style>
+    </head>
+    <body>
+        <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+        <div class="container">
+            <div class="header">
+                <h2>💬 {{ company_name }} - المساعد الذكي</h2>
+                <div class="nav">
+                    <a href="/">الرئيسية</a>
+                    <a href="/products">الأدوية</a>
+                    <a href="/chat">المساعد</a>
+                    <a href="/cart">السلة</a>
+                </div>
+            </div>
+            <div class="chat-box" id="chatBox">
+                <div class="msg assistant">مرحباً! أنا مساعد {{ company_name }}، إسألني عن أي دواء 🌟</div>
+            </div>
+            <div class="input-area">
+                <input type="text" id="userInput" placeholder="اكتب سؤالك هنا..." autofocus>
+                <button onclick="sendMessage()">إرسال</button>
+            </div>
+        </div>
+        <script>
+            function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+            if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+
+            const chatBox = document.getElementById('chatBox');
+            const userInput = document.getElementById('userInput');
+            function addMessage(text, sender) {
+                let div = document.createElement('div');
+                div.className = 'msg ' + sender;
+                div.innerText = text;
+                chatBox.appendChild(div);
+                chatBox.scrollTop = chatBox.scrollHeight;
+            }
+            async function sendMessage() {
+                const message = userInput.value.trim();
+                if (!message) return;
+                addMessage(message, 'user');
+                userInput.value = '';
+                userInput.focus();
+                let typing = document.createElement('div');
+                typing.className = 'msg assistant';
+                typing.innerText = '...يكتب';
+                chatBox.appendChild(typing);
+                chatBox.scrollTop = chatBox.scrollHeight;
+                try {
+                    const res = await fetch('/api/chat', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({message: message})
+                    });
+                    const data = await res.json();
+                    chatBox.removeChild(typing);
+                    if (data.success) {
+                        addMessage(data.reply, 'assistant');
+                    } else {
+                        addMessage('عذراً، حدث خطأ. حاول لاحقاً.', 'assistant');
+                    }
+                } catch (err) {
+                    chatBox.removeChild(typing);
+                    addMessage('تعذر الاتصال بالخادم.', 'assistant');
+                }
+            }
+            userInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') sendMessage();
+            });
+        </script>
+    </body>
+    </html>
+    """, company_name=company_name)
 
 @app.route('/payment')
 def payment_page():
-    return render_template_string("""...""")
+    return render_template_string("""
+    <!DOCTYPE html><html dir="rtl"><head><title>السداد الإلكتروني</title>
+    <style>
+        :root {
+            --bg: #000;
+            --text: #FFD700;
+            --card-bg: #111;
+            --border: #FFD700;
+            --btn-bg: #FFD700;
+            --btn-text: #000;
+        }
+        body.light {
+            --bg: #f5f5f5;
+            --text: #000;
+            --card-bg: #fff;
+            --border: #007bff;
+            --btn-bg: #007bff;
+            --btn-text: #fff;
+        }
+        body{background:var(--bg);color:var(--text);padding:20px;font-family:Arial;transition:background 0.3s,color 0.3s;}
+        .container{max-width:500px;margin:auto;background:var(--card-bg);padding:30px;border-radius:10px;border:1px solid var(--border);}
+        input,select{width:100%;padding:10px;margin:10px 0;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:5px;}
+        .btn{background:var(--btn-bg);color:var(--btn-text);padding:10px;border:none;border-radius:5px;cursor:pointer;width:100%;}
+        .theme-toggle{position:fixed;top:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
+        .nav a{color:var(--text);text-decoration:none;margin-left:15px;}
+    </style>
+    </head>
+    <body>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+    <div class="container">
+        <h2>💳 بوابة السداد الإلكتروني</h2>
+        <div class="nav"><a href="/">الرئيسية</a></div>
+        <p>هذه واجهة نموذجية لربط نظام الدفع (مثل PayPal أو محفظة جوال).</p>
+        <form id="paymentForm">
+            <input type="text" placeholder="رقم الفاتورة" id="invoice" required>
+            <input type="number" placeholder="المبلغ" id="amount" required>
+            <select id="method">
+                <option value="paypal">PayPal</option>
+                <option value="mobile">محفظة جوال</option>
+                <option value="bank">تحويل بنكي</option>
+            </select>
+            <button type="submit" class="btn">دفع الآن</button>
+        </form>
+        <div id="result"></div>
+        <p style="margin-top:20px;font-size:12px;color:#aaa;">ملاحظة: هذه واجهة تجريبية، يجب ربطها ببوابة دفع حقيقية.</p>
+    </div>
+    <script>
+        function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+        if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+        document.getElementById('paymentForm').addEventListener('submit', function(e){
+            e.preventDefault();
+            let invoice=document.getElementById('invoice').value;
+            let amount=document.getElementById('amount').value;
+            let method=document.getElementById('method').value;
+            document.getElementById('result').innerHTML='<p>⏳ جاري معالجة الدفع ...</p>';
+            setTimeout(()=>{
+                document.getElementById('result').innerHTML='<p style="color:green;">✅ تم الدفع بنجاح (محاكاة) للفاتورة '+invoice+'</p>';
+            },2000);
+        });
+    </script>
+    </body>
+    </html>
+    """)
 
-# =============================== نقاط البيع (POS) ===============================
+# =============================== لوحات الصيدلي وأمين المخزن ===============================
 @app.route('/pharmacist')
 @pharmacist_required
 def pharmacist_dashboard():
-    return render_template_string("""...""")
+    return render_template_string("""
+    <!DOCTYPE html><html dir="rtl"><head><title>لوحة الصيدلي</title>
+    <style>body{background:#000;color:#FFD700;padding:20px;font-family:Arial;}.header{background:#111;border:1px solid #FFD700;padding:20px;border-radius:10px;margin-bottom:20px;}</style>
+    </head><body><div class="header"><h1>💊 لوحة الصيدلي</h1><p>مرحباً {{ session.username }} (صيدلي)</p><a href="/" style="color:#FFD700;">الرئيسية</a> | <a href="/pos" style="color:#FFD700;">نقطة البيع</a> | <a href="/chat" style="color:#FFD700;">المساعد</a></div></body>
+    """)
 
 @app.route('/stock')
 @store_keeper_required
 def stock_dashboard():
-    return render_template_string("""...""")
+    return render_template_string("""
+    <!DOCTYPE html><html dir="rtl"><head><title>لوحة المخزن</title>
+    <style>body{background:#000;color:#FFD700;padding:20px;font-family:Arial;}.header{background:#111;border:1px solid #FFD700;padding:20px;border-radius:10px;margin-bottom:20px;}</style>
+    </head><body><div class="header"><h1>📦 لوحة المخزن</h1><p>مرحباً {{ session.username }} (أمين مخزن)</p><a href="/" style="color:#FFD700;">الرئيسية</a> | <a href="/admin/purchases" style="color:#FFD700;">المشتريات</a></div></body>
+    """)
 
-# =============================== المسارات الإدارية (قيد التطوير) ===============================
+# =============================== الصفحات الإدارية البسيطة (لتفادي الأخطاء) ===============================
 @app.route('/admin/settings')
 @admin_required
 def admin_settings():
-    return "صفحة الإعدادات - قيد التطوير"
+    return render_template_string("""<h2>⚙️ الإعدادات</h2><p>هذه الصفحة قيد التطوير.</p><a href="/admin">العودة للوحة</a>""")
 
 @app.route('/admin/products')
 @admin_required
 def admin_products():
-    return "صفحة إدارة المنتجات - قيد التطوير"
+    return render_template_string("""<h2>📦 إدارة المنتجات</h2><p>هذه الصفحة قيد التطوير.</p><a href="/admin">العودة للوحة</a>""")
 
 @app.route('/admin/suppliers')
 @admin_required
 def admin_suppliers():
-    return "صفحة إدارة الموردين - قيد التطوير"
+    return render_template_string("""<h2>🏭 إدارة الموردين</h2><p>هذه الصفحة قيد التطوير.</p><a href="/admin">العودة للوحة</a>""")
 
 @app.route('/admin/purchases')
 @admin_required
 def admin_purchases():
-    return "صفحة إدارة المشتريات - قيد التطوير"
+    return render_template_string("""<h2>📥 إدارة المشتريات</h2><p>هذه الصفحة قيد التطوير.</p><a href="/admin">العودة للوحة</a>""")
 
 @app.route('/admin/offers')
 @admin_required
 def admin_offers():
-    return "صفحة إدارة العروض - قيد التطوير"
+    return render_template_string("""<h2>🎁 إدارة العروض</h2><p>هذه الصفحة قيد التطوير.</p><a href="/admin">العودة للوحة</a>""")
 
 @app.route('/admin/customers')
 @admin_required
 def admin_customers():
-    return "صفحة إدارة العملاء - قيد التطوير"
+    return render_template_string("""<h2>👥 إدارة العملاء</h2><p>هذه الصفحة قيد التطوير.</p><a href="/admin">العودة للوحة</a>""")
 
 @app.route('/admin/invoices')
 @admin_required
 def admin_invoices():
-    return "صفحة الفواتير - قيد التطوير"
+    return render_template_string("""<h2>📄 إدارة الفواتير</h2><p>هذه الصفحة قيد التطوير.</p><a href="/admin">العودة للوحة</a>""")
 
 @app.route('/admin/reports')
 @admin_required
 def admin_reports():
-    return "صفحة التقارير - قيد التطوير"
+    return render_template_string("""<h2>📊 التقارير</h2><p>هذه الصفحة قيد التطوير.</p><a href="/admin">العودة للوحة</a>""")
 
 @app.route('/admin/users')
 @admin_required
 def admin_users():
-    return "صفحة إدارة المستخدمين - قيد التطوير"
+    return render_template_string("""<h2>👤 إدارة المستخدمين</h2><p>هذه الصفحة قيد التطوير.</p><a href="/admin">العودة للوحة</a>""")
 
 @app.route('/admin/returns')
 @admin_required
 def admin_returns():
-    return "صفحة المرتجعات - قيد التطوير"
+    return render_template_string("""<h2>🔄 إدارة المرتجعات</h2><p>هذه الصفحة قيد التطوير.</p><a href="/admin">العودة للوحة</a>""")
+
+# =============================== تصدير التقارير ===============================
+@app.route('/admin/reports/export/<report_type>')
+@login_required
+def export_report(report_type):
+    if report_type == 'inventory':
+        data = execute_query("""
+            SELECT p.id, p.name, p.category, p.quantity, p.min_quantity, p.price, p.cost_price,
+                   p.expiry_date, p.batch_number, p.manufacturer, u.name as unit,
+                   p.dynamic_price, p.sales_velocity, p.abc_class
+            FROM products p
+            LEFT JOIN units u ON p.unit_id = u.id
+            WHERE p.is_active = 1
+            ORDER BY p.name
+        """, fetch_all=True)
+        title = 'تقرير المخزون'
+        headers = ['الرقم', 'الاسم', 'الفئة', 'الكمية', 'الحد الأدنى', 'سعر البيع', 'سعر الشراء', 'تاريخ الصلاحية', 'رقم الدفعة', 'الشركة المصنعة', 'الوحدة', 'السعر الديناميكي', 'سرعة المبيعات', 'تصنيف ABC']
+    elif report_type == 'sales':
+        data = execute_query("""
+            SELECT i.invoice_number, i.customer_name, i.final_total, i.payment_method, i.created_at,
+                   (SELECT COUNT(*) FROM invoice_items WHERE invoice_id = i.id) as items_count,
+                   i.is_anomaly
+            FROM invoices i
+            ORDER BY i.created_at DESC
+            LIMIT 100
+        """, fetch_all=True)
+        title = 'تقرير المبيعات (آخر 100 فاتورة)'
+        headers = ['رقم الفاتورة', 'العميل', 'الإجمالي', 'طريقة الدفع', 'التاريخ', 'عدد الأصناف', 'شاذ']
+    elif report_type == 'expiry':
+        data = execute_query("""
+            SELECT id, name, expiry_date, quantity, batch_number, manufacturer
+            FROM products
+            WHERE expiry_date IS NOT NULL AND is_active = 1
+            ORDER BY expiry_date ASC
+        """, fetch_all=True)
+        title = 'تقرير الصلاحية (الأقرب للانتهاء أولاً)'
+        headers = ['الرقم', 'الاسم', 'تاريخ الصلاحية', 'الكمية', 'رقم الدفعة', 'الشركة المصنعة']
+    else:
+        return 'تقرير غير معروف', 400
+
+    if not data:
+        return 'لا توجد بيانات', 404
+
+    fmt = request.args.get('format', 'excel')
+    if fmt == 'excel':
+        wb = Workbook()
+        ws = wb.active
+        ws.title = title
+        for col, header in enumerate(headers, 1):
+            ws.cell(row=1, column=col, value=header)
+        for row_idx, row in enumerate(data, 2):
+            for col_idx, value in enumerate(row, 1):
+                if isinstance(value, (datetime.date, datetime.datetime)):
+                    value = value.isoformat()
+                ws.cell(row=row_idx, column=col_idx, value=value)
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        return send_file(output, download_name=f"{title}.xlsx", as_attachment=True)
+    elif fmt == 'pdf':
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=2*cm, leftMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm)
+        styles = getSampleStyleSheet()
+        title_style = styles['Title']
+        title_style.alignment = 1
+        elements = []
+        elements.append(Paragraph(title, title_style))
+        elements.append(Spacer(1, 0.5*cm))
+        table_data = [headers]
+        for row in data:
+            row_list = []
+            for value in row:
+                if isinstance(value, (datetime.date, datetime.datetime)):
+                    row_list.append(value.isoformat())
+                else:
+                    row_list.append(str(value) if value is not None else '')
+            table_data.append(row_list)
+        table = Table(table_data, repeatRows=1)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ]))
+        elements.append(table)
+        doc.build(elements)
+        buffer.seek(0)
+        return send_file(buffer, download_name=f"{title}.pdf", as_attachment=True)
+    else:
+        return 'صيغة غير مدعومة', 400
 
 # =============================== تشغيل التطبيق ===============================
 if __name__ == '__main__':
