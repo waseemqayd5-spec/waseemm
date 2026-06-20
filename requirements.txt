@@ -16,3 +16,26 @@ pillow
 opencv-python
 pyzbar
 sentence-transformers
+# المكتبات الأساسية
+Flask==2.3.3
+Werkzeug==2.3.7
+psycopg2-binary==2.9.9
+openpyxl==3.1.2
+reportlab==4.0.9
+Pillow==10.1.0
+requests==2.31.0
+
+# الذكاء الاصطناعي (خفيف للـ Render)
+numpy==1.24.3
+scikit-learn==1.3.1
+sentence-transformers==2.2.2
+
+# OCR والتعرف على الصور (قد لا تعمل على Render بسبب Tesseract)
+pytesseract==0.3.10
+opencv-python-headless==4.8.1.78
+pyzbar==0.1.9
+
+# أدوات إضافية
+qrcode==7.4.2
+python-dotenv==1.0.0
+gunicorn==21.2.0
