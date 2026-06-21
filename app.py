@@ -1,19 +1,17 @@
 """
 نظام إدارة وكالة البشائر للأدوية والمستلزمات الطبية (جملة)
 نسخة متطورة مع ميزات الذكاء الاصطناعي:
+- مساعد صيدلاني ذكي متقدم (RAG + ChatGPT)
 - التسعير الديناميكي
 - كشف الشذوذ والاحتيال
-- مساعد صيدلاني ذكي متقدم (RAG + ChatGPT)
-- التعرف على الأدوية من الصور (OCR + Computer Vision + GPT-4 Vision)
 - نظام توصيات مخصص للعملاء
 - تحليل المشاعر من التقييمات
-- استخراج بيانات الفواتير الورقية (OCR + NLP)
-- لوحات معلومات ذكية (تحليل بيانات + استعلامات طبيعية)
+- لوحات معلومات ذكية
 """
 
 from flask import (
     Flask, request, jsonify, render_template_string, session,
-    redirect, url_for, make_response, send_from_directory, Response, send_file
+    redirect, url_for, Response, send_file
 )
 import os
 import datetime
@@ -75,25 +73,18 @@ try:
 except ImportError:
     SKLEARN_AVAILABLE = False
     print("⚠️ scikit-learn غير مثبت، بعض ميزات الذكاء الاصطناعي ستكون محدودة")
-    print("   قم بتثبيته: pip install scikit-learn numpy")
 
-try:
-    import pytesseract
-    from PIL import Image
-    import cv2
-    OCR_AVAILABLE = True
-except ImportError:
-    OCR_AVAILABLE = False
-    print("⚠️ pytesseract أو PIL غير مثبت، ميزة التعرف من الصور غير متوفرة")
-    print("   قم بتثبيته: pip install pytesseract pillow opencv-python")
+# تعطيل OCR مؤقتاً لتجنب مشاكل Render
+OCR_AVAILABLE = False
+print("⚠️ OCR معطل مؤقتاً لتجنب مشاكل النشر على Render")
 
+# محاولة استيراد Sentence Transformers لـ RAG
 try:
     from sentence_transformers import SentenceTransformer
     SENTENCE_TRANSFORMER_AVAILABLE = True
 except ImportError:
     SENTENCE_TRANSFORMER_AVAILABLE = False
     print("⚠️ sentence-transformers غير مثبت، ميزة RAG محدودة")
-    print("   قم بتثبيته: pip install sentence-transformers")
 
 # =============================== التهيئة ===============================
 app = Flask(__name__)
@@ -101,10 +92,9 @@ app.secret_key = os.environ.get('SECRET_KEY', 'dev-key-change-in-production')
 UPLOAD_FOLDER = 'static/uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 
 DATABASE_URL = os.environ.get('DATABASE_URL', None)
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 
 # =============================== دوال قاعدة البيانات ===============================
 def get_db_connection():
@@ -180,15 +170,6 @@ def get_settings():
     }
     defaults.update(settings)
     return defaults
-
-def save_settings(settings_dict):
-    for key, value in settings_dict.items():
-        if DATABASE_URL:
-            execute_query("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-                          (key, value), commit=True)
-        else:
-            execute_query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-                          (key, value), commit=True)
 
 def log_inventory(product_id, product_name, change_type, quantity_change, old_qty, new_qty, notes, user_id):
     execute_query("""
@@ -927,9 +908,7 @@ def calculate_dynamic_price(product_id):
 
     dynamic_price = base_price
     for factor in factors.values():
-        dynamic_price *= factor
-
-    min_price = cost * 1.1
+        dynamic_price *= factor    min_price = cost * 1.1
     if dynamic_price < min_price:
         dynamic_price = min_price
 
@@ -953,6 +932,172 @@ def api_dynamic_price(product_id):
     if price is None:
         return jsonify({'success': False, 'message': 'المنتج غير موجود'})
     return jsonify({'success': True, 'price': price})
+
+@app.route('/admin/dynamic-pricing', methods=['GET', 'POST'])
+@admin_required
+def dynamic_pricing_page():
+    if request.method == 'POST':
+        product_id = request.form.get('product_id')
+        if product_id:
+            price = calculate_dynamic_price(int(product_id))
+            return jsonify({'success': True, 'price': price})
+
+    products = execute_query("""
+        SELECT id, name, price, dynamic_price, sales_velocity, quantity, expiry_date,
+               price_updated_at, abc_class
+        FROM products WHERE is_active = 1 ORDER BY name
+    """, fetch_all=True)
+
+    update_sales_velocity()
+
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>التسعير الديناميكي</title>
+        <style>
+            :root {
+                --bg: #000;
+                --text: #FFD700;
+                --card-bg: #111;
+                --border: #FFD700;
+                --btn-bg: #FFD700;
+                --btn-text: #000;
+                --input-bg: #000;
+                --input-text: #FFD700;
+            }
+            body.light {
+                --bg: #f5f5f5;
+                --text: #000;
+                --card-bg: #fff;
+                --border: #007bff;
+                --btn-bg: #007bff;
+                --btn-text: #fff;
+                --input-bg: #fff;
+                --input-text: #000;
+            }
+            body{background:var(--bg);color:var(--text);padding:20px;font-family:Arial;transition:background 0.3s,color 0.3s;}
+            .container{max-width:1200px;margin:auto;}
+            .header{background:var(--card-bg);border:1px solid var(--border);padding:20px;border-radius:10px;margin-bottom:20px;}
+            .nav a{color:var(--text);text-decoration:none;margin-left:15px;}
+            table{width:100%;border-collapse:collapse;background:var(--card-bg);border:1px solid var(--border);}
+            th,td{padding:10px;border:1px solid var(--border);text-align:center;}
+            th{background:var(--border);color:var(--btn-text);}
+            .btn{background:var(--btn-bg);color:var(--btn-text);padding:8px 15px;border:none;border-radius:5px;cursor:pointer;}
+            .price-up{color:#4CAF50;}
+            .price-down{color:#f44336;}
+            .theme-toggle{position:fixed;top:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
+            .chat-float{position:fixed;bottom:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);width:60px;height:60px;border-radius:50%;font-size:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:999;box-shadow:0 4px 15px rgba(0,0,0,0.5);text-decoration:none;}
+        </style>
+    </head>
+    <body>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
+    <div class="container">
+        <div class="header">
+            <h2>📊 التسعير الديناميكي الذكي</h2>
+            <div class="nav">
+                <a href="/admin">لوحة المدير</a>
+                <a href="/products">المنتجات</a>
+                <a href="/admin/dynamic-pricing" style="font-weight:bold;">التسعير الديناميكي</a>
+                <a href="/admin/ai-chat">🤖 المساعد الذكي</a>
+            </div>
+            <p style="margin-top:10px;font-size:14px;">يتم حساب السعر الأمثل تلقائياً بناءً على الطلب والمخزون وتاريخ الصلاحية والفئة</p>
+            <button class="btn" onclick="updateAllPrices()">🔄 تحديث جميع الأسعار</button>
+        </div>
+        <div id="result"></div>
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>المنتج</th>
+                    <th>السعر الحالي</th>
+                    <th>السعر الديناميكي</th>
+                    <th>سرعة المبيعات</th>
+                    <th>المخزون</th>
+                    <th>التصنيف</th>
+                    <th>آخر تحديث</th>
+                    <th>إجراء</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in products %}
+                <tr>
+                    <td>{{ p.id }}</td>
+                    <td>{{ p.name }}</td>
+                    <td>{{ p.price }} ريال</td>
+                    <td class="{% if p.dynamic_price and p.dynamic_price > p.price %}price-up{% elif p.dynamic_price and p.dynamic_price < p.price %}price-down{% endif %}">
+                        {{ p.dynamic_price or p.price }} ريال
+                    </td>
+                    <td>{{ "%.1f"|format(p.sales_velocity or 0) }}</td>
+                    <td>{{ p.quantity }}</td>
+                    <td>{{ p.abc_class or '-' }}</td>
+                    <td>{{ p.price_updated_at or 'لم يحدث' }}</td>
+                    <td>
+                        <button class="btn" onclick="updatePrice({{ p.id }})">تحديث</button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <script>
+        function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+        if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+
+        function updatePrice(id) {
+            fetch(`/api/dynamic-price/${id}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('result').innerHTML = `<p style="color:green;">✅ تم تحديث السعر إلى ${data.price} ريال</p>`;
+                        setTimeout(() => location.reload(), 1000);
+                    }
+                });
+        }
+
+        function updateAllPrices() {
+            if (!confirm('تحديث جميع الأسعار قد يستغرق بعض الوقت. هل تريد المتابعة؟')) return;
+            document.getElementById('result').innerHTML = '<p>⏳ جاري تحديث الأسعار...</p>';
+            fetch('/api/update-all-prices', {method: 'POST'})
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('result').innerHTML = `<p style="color:green;">✅ ${data.message}</p>`;
+                    setTimeout(() => location.reload(), 1500);
+                });
+        }
+    </script>
+    </body>
+    </html>
+    """, products=products)
+
+@app.route('/api/update-all-prices', methods=['POST'])
+@admin_required
+def update_all_prices():
+    products = execute_query("SELECT id FROM products WHERE is_active = 1", fetch_all=True)
+    count = 0
+    for p in products:
+        calculate_dynamic_price(p['id'])
+        count += 1
+    return jsonify({'success': True, 'message': f'تم تحديث {count} منتج'})
+
+def update_sales_velocity():
+    products = execute_query("SELECT DISTINCT product_id FROM invoice_items", fetch_all=True)
+    for p in products:
+        pid = p['product_id']
+        items = execute_query("""
+            SELECT ii.quantity, i.created_at
+            FROM invoice_items ii
+            JOIN invoices i ON ii.invoice_id = i.id
+            WHERE ii.product_id = ? AND i.created_at >= datetime('now', '-30 days')
+        """, (pid,), fetch_all=True)
+        if items:
+            total_qty = sum(item['quantity'] for item in items)
+            velocity = total_qty / 30.0
+        else:
+            velocity = 0.1
+        execute_query("UPDATE products SET sales_velocity = ? WHERE id = ?", (velocity, pid), commit=True)
 
 # =============================== ميزة 2: كشف الشذوذ والاحتيال ===============================
 def detect_anomaly(invoice_data):
@@ -1038,6 +1183,145 @@ def check_anomaly():
         'score': result['score'],
         'reason': result['reason']
     })
+
+@app.route('/admin/anomalies')
+@admin_required
+def anomalies_page():
+    anomalies = execute_query("""
+        SELECT i.*, u.username as created_by_name
+        FROM invoices i
+        LEFT JOIN users u ON i.created_by = u.id
+        WHERE i.is_anomaly = 1
+        ORDER BY i.created_at DESC
+    """, fetch_all=True)
+
+    anomaly_logs = execute_query("""
+        SELECT al.*, i.invoice_number, i.customer_name
+        FROM anomaly_logs al
+        JOIN invoices i ON al.invoice_id = i.id
+        ORDER BY al.created_at DESC LIMIT 50
+    """, fetch_all=True)
+
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>كشف الشذوذ والاحتيال</title>
+        <style>
+            :root {
+                --bg: #000;
+                --text: #FFD700;
+                --card-bg: #111;
+                --border: #FFD700;
+                --btn-bg: #FFD700;
+                --btn-text: #000;
+            }
+            body.light {
+                --bg: #f5f5f5;
+                --text: #000;
+                --card-bg: #fff;
+                --border: #007bff;
+                --btn-bg: #007bff;
+                --btn-text: #fff;
+            }
+            body{background:var(--bg);color:var(--text);padding:20px;font-family:Arial;transition:background 0.3s,color 0.3s;}
+            .container{max-width:1200px;margin:auto;}
+            .header{background:var(--card-bg);border:1px solid var(--border);padding:20px;border-radius:10px;margin-bottom:20px;}
+            .nav a{color:var(--text);text-decoration:none;margin-left:15px;}
+            .alert-card{background:var(--card-bg);border:1px solid #f44336;padding:15px;border-radius:8px;margin:10px 0;}
+            table{width:100%;border-collapse:collapse;background:var(--card-bg);border:1px solid var(--border);}
+            th,td{padding:10px;border:1px solid var(--border);text-align:center;}
+            th{background:var(--border);color:var(--btn-text);}
+            .btn{background:var(--btn-bg);color:var(--btn-text);padding:8px 15px;border:none;border-radius:5px;cursor:pointer;}
+            .high-risk{color:#f44336;font-weight:bold;}
+            .theme-toggle{position:fixed;top:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
+            .chat-float{position:fixed;bottom:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);width:60px;height:60px;border-radius:50%;font-size:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:999;box-shadow:0 4px 15px rgba(0,0,0,0.5);text-decoration:none;}
+        </style>
+    </head>
+    <body>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
+    <div class="container">
+        <div class="header">
+            <h2>🛡️ كشف الشذوذ والاحتيال</h2>
+            <div class="nav">
+                <a href="/admin">لوحة المدير</a>
+                <a href="/admin/anomalies" style="font-weight:bold;">الفواتير الشاذة</a>
+            </div>
+            <p style="margin-top:10px;font-size:14px;color:#f44336;">⚠️ يتم تحليل الفواتير تلقائياً لكشف الأنماط غير الطبيعية</p>
+        </div>
+
+        <h3>🚨 الفواتير الشاذة</h3>
+        {% if anomalies %}
+        <table>
+            <thead><tr><th>رقم الفاتورة</th><th>العميل</th><th>الإجمالي</th><th>الخصم</th><th>المبلغ النهائي</th><th>طريقة الدفع</th><th>التاريخ</th><th>السبب</th><th>الحالة</th></tr></thead>
+            <tbody>
+            {% for inv in anomalies %}
+            <tr>
+                <td>{{ inv.invoice_number }}</td>
+                <td>{{ inv.customer_name or 'غير معروف' }}</td>
+                <td>{{ inv.total }}</td>
+                <td>{{ inv.discount }}</td>
+                <td class="high-risk">{{ inv.final_total }}</td>
+                <td>{{ inv.payment_method }}</td>
+                <td>{{ inv.created_at }}</td>
+                <td>{{ inv.anomaly_reason or 'غير محدد' }}</td>
+                <td>
+                    <button class="btn" onclick="markReviewed({{ inv.id }})">✅ مراجعة</button>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p>✅ لا توجد فواتير شاذة حالياً</p>
+        {% endif %}
+
+        <h3 style="margin-top:30px;">📋 سجل المراجعة</h3>
+        {% if anomaly_logs %}
+        <table>
+            <thead><tr><th>الفاتورة</th><th>العميل</th><th>درجة الشذوذ</th><th>السبب</th><th>تمت المراجعة</th><th>التاريخ</th></tr></thead>
+            <tbody>
+            {% for log in anomaly_logs %}
+            <tr>
+                <td>{{ log.invoice_number }}</td>
+                <td>{{ log.customer_name or 'غير معروف' }}</td>
+                <td>{{ "%.2f"|format(log.anomaly_score) }}</td>
+                <td>{{ log.reason }}</td>
+                <td>{{ '✅' if log.is_reviewed else '⏳' }}</td>
+                <td>{{ log.created_at }}</td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p>لا توجد سجلات مراجعة</p>
+        {% endif %}
+    </div>
+    <script>
+        function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+        if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+
+        function markReviewed(id) {
+            fetch(`/api/mark-anomaly-reviewed/${id}`, {method: 'POST'})
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) location.reload();
+                });
+        }
+    </script>
+    </body>
+    </html>
+    """, anomalies=anomalies, anomaly_logs=anomaly_logs)
+
+@app.route('/api/mark-anomaly-reviewed/<int:invoice_id>', methods=['POST'])
+@admin_required
+def mark_anomaly_reviewed(invoice_id):
+    execute_query("UPDATE invoices SET is_anomaly = 0 WHERE id = ?", (invoice_id,), commit=True)
+    execute_query("UPDATE anomaly_logs SET is_reviewed = 1, reviewed_by = ? WHERE invoice_id = ?",
+                  (session.get('user_id', 1), invoice_id), commit=True)
+    return jsonify({'success': True})
 
 # =============================== ميزة 3: المساعد الذكي المتقدم (RAG + ChatGPT) ===============================
 # تحميل نموذج التضمينات إذا كان متوفراً
@@ -1139,36 +1423,7 @@ def api_chat():
         except Exception as e:
             print(f"OpenAI error: {e}")
 
-    # 4. استخدام Gemini كبديل (إذا كان المفتاح موجوداً)
-    if GEMINI_API_KEY:
-        try:
-            system_prompt = f"""أنت مساعد صيدلاني في وكالة البشائر للأدوية والمستلزمات الطبية.
-            معلومات إضافية من قاعدة البيانات:
-            {context}
-
-            تعليمات مهمة:
-            - أجب باللغة العربية الفصحى
-            - قدم معلومات دقيقة عن الأدوية
-            - لا تقدم استشارات طبية تشخيصية
-            - إذا سأل عن دواء معين، استخدم المعلومات المتوفرة أعلاه
-            - إذا لم تعرف الإجابة، قل ذلك بصراحة
-
-            سؤال العميل: {user_message}"""
-
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-            payload = {
-                "contents": [{"role": "user", "parts": [{"text": system_prompt}]}]
-            }
-            resp = requests.post(url, json=payload, timeout=15)
-            if resp.status_code == 200:
-                candidates = resp.json().get("candidates", [])
-                if candidates and candidates[0].get("content", {}).get("parts"):
-                    reply = candidates[0]["content"]["parts"][0]["text"]
-                    return jsonify({"success": True, "reply": reply, "rag_results": rag_results, "model": "Gemini"})
-        except Exception as e:
-            print(f"Gemini error: {e}")
-
-    # 5. الرد المحلي المحسن (في حال فشل جميع الخيارات)
+    # 4. الرد المحلي المحسن (في حال فشل ChatGPT)
     msg_lower = user_message.lower()
 
     for r in rag_results[:3]:
@@ -1200,121 +1455,7 @@ def api_chat():
 
     return jsonify({"success": True, "reply": reply, "rag_results": rag_results, "model": "local"})
 
-# =============================== ميزة 4: تحليل الصور باستخدام GPT-4 Vision ===============================
-@app.route('/api/analyze-medicine-image', methods=['POST'])
-@login_required
-def analyze_medicine_image():
-    """تحليل صورة دواء باستخدام GPT-4 Vision"""
-    if 'file' not in request.files:
-        return jsonify({'success': False, 'message': 'لا يوجد ملف'})
-    
-    file = request.files['file']
-    if not OPENAI_AVAILABLE or not OPENAI_API_KEY:
-        return jsonify({'success': False, 'message': 'مفتاح OpenAI غير موجود'})
-    
-    try:
-        # قراءة الصورة وتحويلها إلى base64
-        image_data = base64.b64encode(file.read()).decode('utf-8')
-        
-        response = openai.ChatCompletion.create(
-            model="gpt-4o",  # أو gpt-4-vision-preview
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "حلل هذه الصورة لدواء أو عبوة دواء. استخرج: اسم الدواء، المادة الفعالة، التركيز، الشركة المصنعة، أي معلومات أخرى مهمة. أجب باللغة العربية."},
-                        {"type": "image_url", "image_url": f"data:image/jpeg;base64,{image_data}"}
-                    ]
-                }
-            ],
-            max_tokens=500
-        )
-        
-        analysis = response.choices[0].message.content
-        return jsonify({'success': True, 'analysis': analysis})
-        
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
-# =============================== ميزة 5: التعرف على الأدوية من الصور (OCR) ===============================
-@app.route('/api/scan-image', methods=['POST'])
-@login_required
-def scan_image():
-    """تحليل صورة الدواء واستخراج المعلومات"""
-    if 'file' not in request.files:
-        return jsonify({'success': False, 'message': 'لا يوجد ملف'})
-
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'success': False, 'message': 'اسم الملف فارغ'})
-
-    if not OCR_AVAILABLE:
-        return jsonify({'success': False, 'message': 'مكتبات OCR غير مثبتة'})
-
-    try:
-        filename = secure_filename(file.filename)
-        temp_path = os.path.join('/tmp', filename)
-        file.save(temp_path)
-
-        image = cv2.imread(temp_path)
-        if image is None:
-            return jsonify({'success': False, 'message': 'لا يمكن قراءة الصورة'})
-
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
-
-        text = pytesseract.image_to_string(gray, lang='ara+eng')
-        text = text.strip()
-
-        if not text:
-            return jsonify({'success': False, 'message': 'لم يتم العثور على نص في الصورة'})
-
-        barcode = None
-        try:
-            from pyzbar import pyzbar
-            barcodes = pyzbar.decode(image)
-            if barcodes:
-                barcode = barcodes[0].data.decode('utf-8')
-        except:
-            pass
-
-        products = []
-        if barcode:
-            product = execute_query("SELECT * FROM products WHERE barcode = ? AND is_active = 1", (barcode,), fetch_one=True)
-            if product:
-                products.append(dict(product))
-
-        if not products:
-            lines = text.split('\n')
-            for line in lines:
-                line = line.strip()
-                if len(line) > 3:
-                    results = execute_query("""
-                        SELECT * FROM products
-                        WHERE name LIKE ? AND is_active = 1
-                        LIMIT 5
-                    """, (f"%{line}%",), fetch_all=True)
-                    for r in results:
-                        if r not in products:
-                            products.append(dict(r))
-
-        try:
-            os.remove(temp_path)
-        except:
-            pass
-
-        return jsonify({
-            'success': True,
-            'text': text,
-            'barcode': barcode,
-            'products': products[:5],
-            'message': f'تم العثور على {len(products)} منتج (منتجات)'
-        })
-
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'خطأ: {str(e)}'})
-
-# =============================== ميزة 6: نظام توصيات مخصص للعملاء ===============================
+# =============================== ميزة 4: نظام توصيات مخصص للعملاء ===============================
 def generate_recommendations(customer_id):
     """توليد توصيات مخصصة للعميل"""
     customer_items = execute_query("""
@@ -1438,7 +1579,115 @@ def calculate_similarity():
         'message': f'تم حساب {count} علاقة تشابه بين {len(products)} منتج'
     })
 
-# =============================== ميزة 7: تحليل المشاعر من التقييمات ===============================
+@app.route('/customer/recommendations')
+def customer_recommendations_page():
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>توصيات مخصصة</title>
+        <style>
+            :root {
+                --bg: #000;
+                --text: #FFD700;
+                --card-bg: #111;
+                --border: #FFD700;
+                --btn-bg: #FFD700;
+                --btn-text: #000;
+            }
+            body.light {
+                --bg: #f5f5f5;
+                --text: #000;
+                --card-bg: #fff;
+                --border: #007bff;
+                --btn-bg: #007bff;
+                --btn-text: #fff;
+            }
+            body{background:var(--bg);color:var(--text);padding:20px;font-family:Arial;transition:background 0.3s,color 0.3s;}
+            .container{max-width:1000px;margin:auto;}
+            .header{background:var(--card-bg);border:1px solid var(--border);padding:20px;border-radius:10px;margin-bottom:20px;}
+            .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:20px;}
+            .card{background:var(--card-bg);border:1px solid var(--border);border-radius:10px;padding:15px;text-align:center;}
+            .card img{width:100%;height:150px;object-fit:cover;border-radius:8px;background:#222;}
+            .btn{background:var(--btn-bg);color:var(--btn-text);padding:8px 15px;border:none;border-radius:5px;cursor:pointer;}
+            .theme-toggle{position:fixed;top:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
+            .chat-float{position:fixed;bottom:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);width:60px;height:60px;border-radius:50%;font-size:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:999;box-shadow:0 4px 15px rgba(0,0,0,0.5);text-decoration:none;}
+        </style>
+    </head>
+    <body>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
+    <div class="container">
+        <div class="header">
+            <h2>🎯 توصيات مخصصة لك</h2>
+            <div class="nav">
+                <a href="/">الرئيسية</a>
+                <a href="/products">الأدوية</a>
+                <a href="/customer/recommendations" style="font-weight:bold;">التوصيات</a>
+            </div>
+            <div style="margin-top:10px;">
+                <input type="tel" id="phoneInput" placeholder="أدخل رقم هاتفك" style="padding:8px;border-radius:5px;border:1px solid var(--border);background:var(--bg);color:var(--text);width:200px;">
+                <button class="btn" onclick="getRecommendations()">عرض التوصيات</button>
+            </div>
+        </div>
+        <div id="recommendations" class="grid"></div>
+    </div>
+    <script>
+        function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+        if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+
+        function getRecommendations() {
+            let phone = document.getElementById('phoneInput').value.trim();
+            if (!phone) { alert('أدخل رقم الهاتف'); return; }
+
+            fetch(`/api/customer/${phone}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.success) {
+                        document.getElementById('recommendations').innerHTML =
+                            `<p style="color:red;">العميل غير موجود. استخدم رقم هاتف مسجل.</p>`;
+                        return;
+                    }
+                    fetch(`/api/recommendations/${data.id}`)
+                        .then(r => r.json())
+                        .then(res => {
+                            if (res.success && res.recommendations.length > 0) {
+                                let html = '';
+                                res.recommendations.forEach(p => {
+                                    html += `
+                                        <div class="card">
+                                            <img src="${p.image_url || '/static/uploads/default.jpg'}" onerror="this.src='/static/uploads/default.jpg'">
+                                            <h4>${p.name}</h4>
+                                            <p>💰 ${p.price} ريال</p>
+                                            <p style="font-size:12px;color:#aaa;">${p.category || ''}</p>
+                                            <button class="btn" onclick="addToCart(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.price})">أضف للسلة</button>
+                                        </div>
+                                    `;
+                                });
+                                document.getElementById('recommendations').innerHTML = html;
+                            } else {
+                                document.getElementById('recommendations').innerHTML =
+                                    `<p>لا توجد توصيات حالياً. قم بشراء المزيد من المنتجات للحصول على توصيات مخصصة.</p>`;
+                            }
+                        });
+                });
+        }
+
+        function addToCart(id, name, price) {
+            let cart = JSON.parse(localStorage.getItem('cart') || '[]');
+            let existing = cart.find(i => i.id == id);
+            if (existing) existing.quantity += 1;
+            else cart.push({ id, name, price, quantity: 1 });
+            localStorage.setItem('cart', JSON.stringify(cart));
+            alert(`تمت إضافة ${name} إلى السلة`);
+        }
+    </script>
+    </body>
+    </html>
+    """)
+
+# =============================== ميزة 5: تحليل المشاعر من التقييمات ===============================
 def analyze_sentiment(text):
     """تحليل المشاعر باستخدام ChatGPT أو نموذج بسيط"""
     if not text:
@@ -1510,147 +1759,106 @@ def submit_feedback():
         'sentiment': sentiment
     })
 
-# =============================== ميزة 8: استخراج بيانات الفواتير الورقية (OCR + NLP) ===============================
-@app.route('/api/analyze-invoice', methods=['POST'])
-@login_required
-def analyze_invoice():
-    if 'file' not in request.files:
-        return jsonify({'success': False, 'message': 'لا يوجد ملف'})
-
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'success': False, 'message': 'اسم الملف فارغ'})
-
-    if not OCR_AVAILABLE:
-        return jsonify({'success': False, 'message': 'مكتبات OCR غير مثبتة'})
-
-    try:
-        filename = secure_filename(file.filename)
-        temp_path = os.path.join('/tmp', filename)
-        file.save(temp_path)
-
-        image = cv2.imread(temp_path)
-        if image is None:
-            return jsonify({'success': False, 'message': 'لا يمكن قراءة الصورة'})
-
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
-
-        text = pytesseract.image_to_string(gray, lang='ara+eng')
-        text = text.strip()
-
-        if not text:
-            return jsonify({'success': False, 'message': 'لم يتم العثور على نص في الصورة'})
-
-        extracted = {
-            'invoice_number': None,
-            'supplier_name': None,
-            'date': None,
-            'total': None,
-            'items': []
-        }
-
-        invoice_match = re.search(r'(?:رقم|فاتورة|invoice|#)\s*[: ]?\s*([A-Za-z0-9\-]+)', text, re.IGNORECASE)
-        if invoice_match:
-            extracted['invoice_number'] = invoice_match.group(1)
-
-        supplier_match = re.search(r'(?:مورد|شركة|supplier|from)\s*[: ]?\s*([^\n]+)', text, re.IGNORECASE)
-        if supplier_match:
-            extracted['supplier_name'] = supplier_match.group(1).strip()
-
-        date_match = re.search(r'(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})', text)
-        if not date_match:
-            date_match = re.search(r'(\d{4}[/\-]\d{1,2}[/\-]\d{1,2})', text)
-        if date_match:
-            extracted['date'] = date_match.group(1)
-
-        total_match = re.search(r'(?:إجمالي|total|المجموع|المبلغ)\s*[: ]?\s*([\d,]+\.?\d*)', text, re.IGNORECASE)
-        if total_match:
-            extracted['total'] = float(total_match.group(1).replace(',', ''))
-
-        lines = text.split('\n')
-        for line in lines:
-            line = line.strip()
-            item_match = re.search(r'([^\d]+)\s+(\d+\.?\d*)\s+(\d+\.?\d*)\s*$', line)
-            if item_match:
-                extracted['items'].append({
-                    'name': item_match.group(1).strip(),
-                    'quantity': float(item_match.group(2)),
-                    'price': float(item_match.group(3))
-                })
-
-        if not extracted['items']:
-            products = execute_query("SELECT name FROM products WHERE is_active = 1", fetch_all=True)
-            for p in products:
-                if p['name'] in text:
-                    extracted['items'].append({
-                        'name': p['name'],
-                        'quantity': 1,
-                        'price': 0
-                    })
-
-        try:
-            os.remove(temp_path)
-        except:
-            pass
-
-        return jsonify({
-            'success': True,
-            'text': text[:500],
-            'extracted': extracted,
-            'message': 'تم استخراج البيانات بنجاح'
-        })
-
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'خطأ: {str(e)}'})
-
-@app.route('/api/save-invoice-data', methods=['POST'])
+@app.route('/admin/feedback')
 @admin_required
-def save_invoice_data():
-    data = request.json
-    try:
-        supplier_name = data.get('supplier_name', '')
-        supplier = None
-        if supplier_name:
-            supplier = execute_query("SELECT id FROM suppliers WHERE name LIKE ?", (f"%{supplier_name}%",), fetch_one=True)
+def feedback_page():
+    feedbacks = execute_query("""
+        SELECT * FROM feedback ORDER BY created_at DESC LIMIT 100
+    """, fetch_all=True)
 
-        purchase_id = None
-        if data.get('items'):
-            total = data.get('total', 0)
-            if total == 0:
-                total = sum(item['quantity'] * item['price'] for item in data['items'])
+    stats = execute_query("""
+        SELECT
+            COUNT(*) as total,
+            AVG(rating) as avg_rating,
+            SUM(CASE WHEN sentiment_label = 'إيجابي' THEN 1 ELSE 0 END) as positive,
+            SUM(CASE WHEN sentiment_label = 'سلبي' THEN 1 ELSE 0 END) as negative,
+            SUM(CASE WHEN sentiment_label = 'محايد' THEN 1 ELSE 0 END) as neutral
+        FROM feedback
+    """, fetch_one=True)
 
-            execute_query("""
-                INSERT INTO purchases (supplier_id, invoice_number, total_cost, purchase_date, notes)
-                VALUES (?, ?, ?, ?, ?)
-            """, (
-                supplier['id'] if supplier else None,
-                data.get('invoice_number', ''),
-                total,
-                data.get('date') or datetime.date.today().isoformat(),
-                'تم الاستيراد من الفاتورة الورقية'
-            ), commit=True)
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>تحليل المشاعر والتقييمات</title>
+        <style>
+            :root {
+                --bg: #000;
+                --text: #FFD700;
+                --card-bg: #111;
+                --border: #FFD700;
+                --btn-bg: #FFD700;
+                --btn-text: #000;
+            }
+            body.light {
+                --bg: #f5f5f5;
+                --text: #000;
+                --card-bg: #fff;
+                --border: #007bff;
+                --btn-bg: #007bff;
+                --btn-text: #fff;
+            }
+            body{background:var(--bg);color:var(--text);padding:20px;font-family:Arial;transition:background 0.3s,color 0.3s;}
+            .container{max-width:1200px;margin:auto;}
+            .header{background:var(--card-bg);border:1px solid var(--border);padding:20px;border-radius:10px;margin-bottom:20px;}
+            .stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:15px;margin-bottom:20px;}
+            .stat-card{background:var(--card-bg);border:1px solid var(--border);padding:15px;border-radius:10px;text-align:center;}
+            .stat-card .num{font-size:24px;font-weight:bold;}
+            .feedback-item{background:var(--card-bg);border:1px solid var(--border);padding:15px;border-radius:8px;margin:10px 0;}
+            .positive{color:#4CAF50;}
+            .negative{color:#f44336;}
+            .neutral{color:#FFC107;}
+            .theme-toggle{position:fixed;top:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
+            .chat-float{position:fixed;bottom:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);width:60px;height:60px;border-radius:50%;font-size:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:999;box-shadow:0 4px 15px rgba(0,0,0,0.5);text-decoration:none;}
+        </style>
+    </head>
+    <body>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
+    <div class="container">
+        <div class="header">
+            <h2>📊 تحليل المشاعر والتقييمات</h2>
+            <div class="nav">
+                <a href="/admin">لوحة المدير</a>
+                <a href="/admin/feedback" style="font-weight:bold;">التقييمات</a>
+            </div>
+        </div>
 
-            purchase = execute_query("SELECT id FROM purchases ORDER BY id DESC LIMIT 1", fetch_one=True)
-            purchase_id = purchase['id']
+        <div class="stats">
+            <div class="stat-card"><div class="num">{{ stats.total or 0 }}</div>إجمالي التقييمات</div>
+            <div class="stat-card"><div class="num">{{ "%.1f"|format(stats.avg_rating or 0) }}</div>متوسط التقييم</div>
+            <div class="stat-card positive"><div class="num">{{ stats.positive or 0 }}</div>👍 إيجابي</div>
+            <div class="stat-card negative"><div class="num">{{ stats.negative or 0 }}</div>👎 سلبي</div>
+            <div class="stat-card neutral"><div class="num">{{ stats.neutral or 0 }}</div>😐 محايد</div>
+        </div>
 
-            for item in data['items']:
-                product = execute_query("SELECT id FROM products WHERE name LIKE ?", (f"%{item['name']}%",), fetch_one=True)
-                if product:
-                    execute_query("""
-                        INSERT INTO purchase_items (purchase_id, product_id, quantity, cost_price, total)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (purchase_id, product['id'], item['quantity'], item['price'], item['quantity'] * item['price']), commit=True)
+        <h3>📝 التقييمات الأخيرة</h3>
+        {% for fb in feedbacks %}
+        <div class="feedback-item">
+            <div style="display:flex;justify-content:space-between;flex-wrap:wrap;">
+                <span><strong>{{ fb.customer_name or 'غير معروف' }}</strong> ({{ fb.customer_phone or 'لا يوجد' }})</span>
+                <span>⭐ {{ fb.rating }}/5</span>
+                <span class="{% if fb.sentiment_label == 'إيجابي' %}positive{% elif fb.sentiment_label == 'سلبي' %}negative{% else %}neutral{% endif %}">
+                    {{ fb.sentiment_label or 'محايد' }} ({{ "%.2f"|format(fb.sentiment_score or 0) }})
+                </span>
+                <span style="font-size:12px;color:#aaa;">{{ fb.created_at }}</span>
+            </div>
+            <p style="margin-top:10px;">{{ fb.comment }}</p>
+        </div>
+        {% else %}
+        <p>لا توجد تقييمات حالياً</p>
+        {% endfor %}
+    </div>
+    <script>
+        function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+        if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+    </script>
+    </body>
+    </html>
+    """, stats=stats, feedbacks=feedbacks)
 
-                    execute_query("UPDATE products SET quantity = quantity + ? WHERE id = ?",
-                                  (item['quantity'], product['id']), commit=True)
-
-        return jsonify({'success': True, 'message': 'تم حفظ الفاتورة بنجاح', 'purchase_id': purchase_id})
-
-    except Exception as e:
-        return jsonify({'success': False, 'message': f'خطأ: {str(e)}'})
-
-# =============================== ميزة 9: لوحات معلومات ذكية (تحليل بيانات + استعلامات طبيعية) ===============================
+# =============================== ميزة 6: لوحات معلومات ذكية ===============================
 @app.route('/api/ai-insights', methods=['POST'])
 @admin_required
 def ai_insights():
@@ -1767,7 +1975,256 @@ def analytics_query():
 
     return jsonify({'success': True, 'result': result})
 
-# =============================== ميزة 10: واجهة ChatGPT في لوحة التحكم ===============================
+@app.route('/admin/analytics')
+@admin_required
+def analytics_page():
+    stats = execute_query("""
+        SELECT
+            (SELECT COUNT(*) FROM products WHERE is_active = 1) as total_products,
+            (SELECT COUNT(*) FROM customers) as total_customers,
+            (SELECT COUNT(*) FROM invoices WHERE DATE(created_at) = DATE('now')) as today_sales,
+            (SELECT IFNULL(SUM(final_total), 0) FROM invoices WHERE DATE(created_at) = DATE('now')) as today_revenue,
+            (SELECT IFNULL(SUM(final_total), 0) FROM invoices WHERE created_at >= DATE('now', '-30 days')) as month_revenue
+    """, fetch_one=True)
+
+    top_products = execute_query("""
+        SELECT p.name, SUM(ii.quantity) as total_sold, SUM(ii.total) as revenue
+        FROM invoice_items ii
+        JOIN products p ON ii.product_id = p.id
+        GROUP BY ii.product_id
+        ORDER BY total_sold DESC
+        LIMIT 10
+    """, fetch_all=True)
+
+    category_sales = execute_query("""
+        SELECT p.category, SUM(ii.total) as revenue
+        FROM invoice_items ii
+        JOIN products p ON ii.product_id = p.id
+        WHERE p.category IS NOT NULL AND p.category != ''
+        GROUP BY p.category
+        ORDER BY revenue DESC
+    """, fetch_all=True)
+
+    daily_sales = execute_query("""
+        SELECT DATE(created_at) as day, IFNULL(SUM(final_total), 0) as total
+        FROM invoices
+        WHERE created_at >= DATE('now', '-7 days')
+        GROUP BY DATE(created_at)
+        ORDER BY day
+    """, fetch_all=True)
+
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html dir="rtl">
+    <head>
+        <meta charset="UTF-8">
+        <title>لوحة التحليل الذكية</title>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <style>
+            :root {
+                --bg: #000;
+                --text: #FFD700;
+                --card-bg: #111;
+                --border: #FFD700;
+                --btn-bg: #FFD700;
+                --btn-text: #000;
+            }
+            body.light {
+                --bg: #f5f5f5;
+                --text: #000;
+                --card-bg: #fff;
+                --border: #007bff;
+                --btn-bg: #007bff;
+                --btn-text: #fff;
+            }
+            body{background:var(--bg);color:var(--text);padding:20px;font-family:Arial;transition:background 0.3s,color 0.3s;}
+            .container{max-width:1400px;margin:auto;}
+            .header{background:var(--card-bg);border:1px solid var(--border);padding:20px;border-radius:10px;margin-bottom:20px;}
+            .stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:15px;margin-bottom:20px;}
+            .stat-card{background:var(--card-bg);border:1px solid var(--border);padding:15px;border-radius:10px;text-align:center;}
+            .stat-card .num{font-size:28px;font-weight:bold;color:var(--text);}
+            .stat-card .label{font-size:12px;color:#aaa;}
+            .chart-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(400px,1fr));gap:20px;margin-bottom:20px;}
+            .chart-box{background:var(--card-bg);border:1px solid var(--border);padding:15px;border-radius:10px;}
+            .chart-box canvas{max-height:300px;width:100% !important;}
+            .query-area{background:var(--card-bg);border:1px solid var(--border);padding:20px;border-radius:10px;margin-top:20px;}
+            .query-area input{width:100%;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:5px;}
+            .btn{background:var(--btn-bg);color:var(--btn-text);padding:8px 20px;border:none;border-radius:5px;cursor:pointer;}
+            .theme-toggle{position:fixed;top:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
+            .chat-float{position:fixed;bottom:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);width:60px;height:60px;border-radius:50%;font-size:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:999;box-shadow:0 4px 15px rgba(0,0,0,0.5);text-decoration:none;}
+            .query-result{background:var(--bg);border:1px solid var(--border);padding:15px;border-radius:5px;margin-top:10px;max-height:300px;overflow-y:auto;}
+        </style>
+    </head>
+    <body>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
+    <div class="container">
+        <div class="header">
+            <h2>📊 لوحة التحليل الذكية</h2>
+            <div class="nav">
+                <a href="/admin">لوحة المدير</a>
+                <a href="/admin/analytics" style="font-weight:bold;">التحليل</a>
+                <a href="/admin/ai-chat">🤖 المساعد الذكي</a>
+            </div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card"><div class="num">{{ stats.total_products or 0 }}</div><div class="label">إجمالي المنتجات</div></div>
+            <div class="stat-card"><div class="num">{{ stats.total_customers or 0 }}</div><div class="label">إجمالي العملاء</div></div>
+            <div class="stat-card"><div class="num">{{ stats.today_sales or 0 }}</div><div class="label">مبيعات اليوم</div></div>
+            <div class="stat-card"><div class="num">{{ "%.0f"|format(stats.today_revenue or 0) }}</div><div class="label">إيرادات اليوم</div></div>
+            <div class="stat-card"><div class="num">{{ "%.0f"|format(stats.month_revenue or 0) }}</div><div class="label">إيرادات الشهر</div></div>
+        </div>
+
+        <div class="chart-grid">
+            <div class="chart-box">
+                <h4>🏆 أفضل المنتجات مبيعاً</h4>
+                <canvas id="topProductsChart"></canvas>
+            </div>
+            <div class="chart-box">
+                <h4>📊 المبيعات حسب الفئة</h4>
+                <canvas id="categoryChart"></canvas>
+            </div>
+            <div class="chart-box" style="grid-column:1/-1;">
+                <h4>📈 المبيعات اليومية (آخر 7 أيام)</h4>
+                <canvas id="dailySalesChart"></canvas>
+            </div>
+        </div>
+
+        <div class="query-area">
+            <h4>🔍 استعلام طبيعي</h4>
+            <p style="font-size:12px;color:#aaa;">اطرح سؤالاً عن بيانات المبيعات مثل: "ما هو أفضل دواء مبيعاً هذا الشهر؟"</p>
+            <div style="display:flex;gap:10px;margin-top:10px;">
+                <input type="text" id="queryInput" placeholder="اكتب سؤالك هنا..." style="flex:1;">
+                <button class="btn" onclick="runQuery()">🔍 بحث</button>
+                <button class="btn" onclick="getInsights()" style="background:#4CAF50;color:#fff;">📊 تحليل</button>
+            </div>
+            <div id="queryResult" class="query-result" style="display:none;"></div>
+        </div>
+    </div>
+    <script>
+        function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+        if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+
+        const topProducts = {{ top_products | tojson }};
+        const categorySales = {{ category_sales | tojson }};
+        const dailySales = {{ daily_sales | tojson }};
+
+        const ctx1 = document.getElementById('topProductsChart').getContext('2d');
+        new Chart(ctx1, {
+            type: 'bar',
+            data: {
+                labels: topProducts.map(p => p.name),
+                datasets: [{
+                    label: 'الكمية المباعة',
+                    data: topProducts.map(p => p.total_sold),
+                    backgroundColor: 'rgba(255, 215, 0, 0.6)',
+                    borderColor: 'rgba(255, 215, 0, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { labels: { color: '#FFD700' } } },
+                scales: { y: { ticks: { color: '#FFD700' } }, x: { ticks: { color: '#FFD700' } } }
+            }
+        });
+
+        const ctx2 = document.getElementById('categoryChart').getContext('2d');
+        new Chart(ctx2, {
+            type: 'pie',
+            data: {
+                labels: categorySales.map(c => c.category),
+                datasets: [{
+                    data: categorySales.map(c => c.revenue),
+                    backgroundColor: ['#FFD700', '#4CAF50', '#2196F3', '#FF5722', '#9C27B0', '#FF9800']
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { labels: { color: '#FFD700' } } }
+            }
+        });
+
+        const ctx3 = document.getElementById('dailySalesChart').getContext('2d');
+        new Chart(ctx3, {
+            type: 'line',
+            data: {
+                labels: dailySales.map(d => d.day),
+                datasets: [{
+                    label: 'الإيرادات',
+                    data: dailySales.map(d => d.total),
+                    borderColor: '#FFD700',
+                    backgroundColor: 'rgba(255, 215, 0, 0.1)',
+                    fill: true,
+                    tension: 0.3
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { labels: { color: '#FFD700' } } },
+                scales: { y: { ticks: { color: '#FFD700' } }, x: { ticks: { color: '#FFD700' } } }
+            }
+        });
+
+        function runQuery() {
+            const query = document.getElementById('queryInput').value.trim();
+            if (!query) return;
+
+            const resultDiv = document.getElementById('queryResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = '⏳ جاري تحليل السؤال...';
+
+            fetch('/api/analytics-query', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({query: query})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    resultDiv.innerHTML = `<pre style="white-space:pre-wrap;color:#FFD700;">${data.result}</pre>`;
+                } else {
+                    resultDiv.innerHTML = `<p style="color:#f44336;">❌ ${data.message}</p>`;
+                }
+            })
+            .catch(err => {
+                resultDiv.innerHTML = `<p style="color:#f44336;">❌ خطأ: ${err}</p>`;
+            });
+        }
+
+        function getInsights() {
+            const resultDiv = document.getElementById('queryResult');
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = '⏳ جاري تحليل البيانات...';
+
+            fetch('/api/ai-insights', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({type: 'general'})
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    resultDiv.innerHTML = `<pre style="white-space:pre-wrap;color:#4CAF50;">📊 ${data.insights}</pre>`;
+                } else {
+                    resultDiv.innerHTML = `<p style="color:#f44336;">❌ ${data.message}</p>`;
+                }
+            })
+            .catch(err => {
+                resultDiv.innerHTML = `<p style="color:#f44336;">❌ خطأ: ${err}</p>`;
+            });
+        }
+
+        document.getElementById('queryInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') runQuery();
+        });
+    </script>
+    </body>
+    </html>
+    """, stats=stats, top_products=top_products, category_sales=category_sales, daily_sales=daily_sales)
+
+# =============================== ميزة 7: واجهة ChatGPT في لوحة التحكم ===============================
 @app.route('/admin/ai-chat')
 @admin_required
 def ai_chat_page():
@@ -1936,30 +2393,469 @@ def ai_chat_page():
     </html>
     """)
 
-# =============================== المسارات الإضافية (من الكود الأصلي) ===============================
-@app.route('/admin/dynamic-pricing', methods=['GET', 'POST'])
-@admin_required
-def dynamic_pricing_page():
-    if request.method == 'POST':
-        product_id = request.form.get('product_id')
-        if product_id:
-            price = calculate_dynamic_price(int(product_id))
-            return jsonify({'success': True, 'price': price})
+# =============================== الصفحات الرئيسية ===============================
+@app.route('/')
+def home():
+    settings = get_settings()
+    company_name = settings['company_name']
+    company_logo = settings['company_logo']
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html dir="rtl" lang="ar">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+        <title>{{ company_name }}</title>
+        <style>
+            :root {
+                --bg: #000;
+                --text: #FFD700;
+                --card-bg: #111;
+                --border: #FFD700;
+                --input-bg: #000;
+                --input-text: #FFD700;
+                --btn-bg: #FFD700;
+                --btn-text: #000;
+            }
+            body.light {
+                --bg: #f5f5f5;
+                --text: #000;
+                --card-bg: #fff;
+                --border: #007bff;
+                --input-bg: #fff;
+                --input-text: #000;
+                --btn-bg: #007bff;
+                --btn-text: #fff;
+            }
+            * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Tahoma', Arial, sans-serif; }
+            body { background: var(--bg); color: var(--text); padding: 20px; transition: background 0.3s, color 0.3s; }
+            .container { max-width: 1200px; margin: 0 auto; }
+            .header { text-align: center; padding: 20px; background: var(--card-bg); border-radius: 15px; margin-bottom: 30px; border: 1px solid var(--border); }
+            .header h1 { color: var(--text); }
+            .nav { display: flex; gap: 15px; justify-content: center; margin-bottom: 30px; flex-wrap: wrap; }
+            .nav a { background: var(--card-bg); color: var(--text); padding: 12px 25px; text-decoration: none; border-radius: 8px; border: 1px solid var(--border); transition: 0.3s; }
+            .nav a:hover, .nav a.active { background: var(--btn-bg); color: var(--btn-text); }
+            .content { background: var(--card-bg); padding: 25px; border-radius: 15px; border: 1px solid var(--border); }
+            h2 { color: var(--text); margin-bottom: 20px; border-right: 4px solid var(--border); padding-right: 15px; }
+            .products-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 25px; margin-top: 20px; }
+            .product-card { background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 15px; text-align: center; transition: 0.3s; display: flex; flex-direction: column; }
+            .product-card:hover { transform: translateY(-5px); box-shadow: 0 5px 15px rgba(255,215,0,0.3); }
+            .product-img { width: 100%; height: 200px; object-fit: cover; border-radius: 8px; margin-bottom: 10px; background: #222; }
+            .product-name { font-weight: bold; font-size: 18px; margin: 10px 0; color: var(--text); }
+            .product-price { color: var(--text); font-size: 22px; font-weight: bold; margin: 5px 0; }
+            .product-price small { font-size: 14px; }
+            .product-desc { font-size: 13px; color: #ccc; margin: 8px 0; }
+            .product-stock { font-size: 12px; color: #aaa; margin-bottom: 8px; }
+            .quantity-control { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 10px 0; }
+            .quantity-control button { background: var(--btn-bg); color: var(--btn-text); border: none; width: 30px; height: 30px; border-radius: 5px; font-weight: bold; cursor: pointer; }
+            .quantity-control span { font-size: 16px; font-weight: bold; min-width: 30px; }
+            button.add-to-cart { background: var(--btn-bg); color: var(--btn-text); border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; font-weight: bold; margin-top: 10px; transition: 0.2s; width: 100%; }
+            button.add-to-cart:hover { opacity: 0.8; }
+            .barcode-scanner { margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap; }
+            .barcode-scanner input { flex: 1; padding: 10px; border: 1px solid var(--border); background: var(--input-bg); color: var(--input-text); border-radius: 5px; }
+            .chat-float { position: fixed; bottom: 20px; left: 20px; background: var(--btn-bg); color: var(--btn-text); width: 60px; height: 60px; border-radius: 50%; font-size: 30px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 999; box-shadow: 0 4px 15px rgba(0,0,0,0.5); text-decoration: none; }
+            .theme-toggle { position: fixed; top: 20px; left: 20px; background: var(--btn-bg); color: var(--btn-text); border: none; border-radius: 50%; width: 50px; height: 50px; font-size: 20px; cursor: pointer; z-index: 1000; }
+            .ai-badge { background: #4CAF50; color: #fff; padding: 2px 10px; border-radius: 20px; font-size: 10px; margin-right: 5px; }
+            @media (max-width: 600px) { .products-grid { grid-template-columns: 1fr; } }
+        </style>
+    </head>
+    <body>
+        <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+        <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
+        <div class="container">
+            <div class="header">
+                <h1>{{ company_logo }} {{ company_name }}</h1>
+                <p>نظام إدارة الأدوية والمستلزمات الطبية بالجملة</p>
+                <p style="font-size:14px;color:#aaa;">🧠 مدعوم بالذكاء الاصطناعي <span class="ai-badge">ChatGPT</span></p>
+            </div>
+            <div class="nav">
+                <a href="/" class="active">الرئيسية</a>
+                <a href="/products">الأدوية</a>
+                <a href="/offers">العروض</a>
+                <a href="/points">نقاطي</a>
+                <a href="/cart">السلة</a>
+                <a href="/chat">💬 المساعد</a>
+                <a href="/customer/recommendations">🎯 توصيات</a>
+                <a href="/login">دخول الإدارة</a>
+            </div>
+            <div class="content">
+                <h2>مرحباً بكم في وكالة البشائر</h2>
+                <p>أكبر موزع للأدوية والمستلزمات الطبية في اليمن.</p>
+                <div class="barcode-scanner">
+                    <input type="text" id="barcode-input" placeholder="ادخل الباركود للبحث">
+                    <button onclick="searchByBarcode()">🔍 بحث</button>
+                </div>
+                <div id="scanned-product" style="margin:10px 0;padding:15px;border:1px solid var(--border);border-radius:8px;"></div>
+                <div id="featured-products" class="products-grid"></div>
+            </div>
+        </div>
+        <script>
+            let quantities = {};
 
-    products = execute_query("""
-        SELECT id, name, price, dynamic_price, sales_velocity, quantity, expiry_date,
-               price_updated_at, abc_class
-        FROM products WHERE is_active = 1 ORDER BY name
-    """, fetch_all=True)
+            function toggleTheme() {
+                document.body.classList.toggle('light');
+                localStorage.setItem('theme', document.body.classList.contains('light') ? 'light' : 'dark');
+            }
+            if (localStorage.getItem('theme') === 'light') document.body.classList.add('light');
 
-    update_sales_velocity()
+            function loadProducts() {
+                fetch('/api/products?limit=50')
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            let html = '';
+                            data.products.forEach(p => {
+                                if (!quantities[p.id]) quantities[p.id] = 1;
+                                let priceDisplay = p.dynamic_price ? `${p.dynamic_price} (ديناميكي)` : p.price;
+                                html += `
+                                    <div class="product-card">
+                                        <img src="${p.image_url || '/static/uploads/default.jpg'}" class="product-img" onerror="this.src='/static/uploads/default.jpg'">
+                                        <div class="product-name">${p.name} ${p.dynamic_price ? '🔄' : ''}</div>
+                                        <div class="product-price">${priceDisplay} ريال <small>لل${p.unit_name || 'حبة'}</small></div>
+                                        <div class="product-desc">${p.description || ''}</div>
+                                        <div class="product-stock">المتبقي: ${p.quantity} ${p.unit_name || ''}</div>
+                                        <div class="quantity-control">
+                                            <button onclick="changeQty(${p.id}, -1)">-</button>
+                                            <span id="qty-${p.id}">${quantities[p.id]}</span>
+                                            <button onclick="changeQty(${p.id}, 1)">+</button>
+                                        </div>
+                                        <button class="add-to-cart" onclick="addToCart(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.dynamic_price || p.price})">أضف للسلة</button>
+                                    </div>
+                                `;
+                            });
+                            document.getElementById('featured-products').innerHTML = html;
+                        }
+                    });
+            }
 
+            function changeQty(id, delta) {
+                let newVal = (quantities[id] || 1) + delta;
+                if (newVal < 1) newVal = 1;
+                quantities[id] = newVal;
+                document.getElementById(`qty-${id}`).innerText = newVal;
+            }
+
+            function addToCart(id, name, price) {
+                let qty = quantities[id] || 1;
+                let cart = JSON.parse(localStorage.getItem('cart') || '[]');
+                let existing = cart.find(i => i.id == id);
+                if (existing) existing.quantity += qty;
+                else cart.push({ id, name, price, quantity: qty });
+                localStorage.setItem('cart', JSON.stringify(cart));
+                alert(`تمت إضافة ${qty} من ${name}`);
+                quantities[id] = 1;
+                if(document.getElementById(`qty-${id}`)) document.getElementById(`qty-${id}`).innerText = 1;
+            }
+
+            function searchByBarcode() {
+                let barcode = document.getElementById('barcode-input').value.trim();
+                if (!barcode) return;
+                fetch('/api/scan-barcode', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({barcode: barcode})
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        let p = data.product;
+                        let priceDisplay = p.dynamic_price || p.price;
+                        let html = `<div style="display:flex;align-items:center;gap:15px;flex-wrap:wrap;"><img src="${p.image_url || '/static/uploads/default.jpg'}" style="width:80px;height:80px;object-fit:cover;border-radius:8px;"><div><strong>${p.name}</strong><br>السعر: ${priceDisplay} ريال<br>الكمية: ${p.quantity} ${p.unit_name || ''}<br>الشركة: ${p.manufacturer || ''}<br>رقم الدفعة: ${p.batch_number || ''}<br>المادة الفعالة: ${p.active_ingredient || ''}<br>التركيز: ${p.strength || ''}<br>تاريخ الصلاحية: ${p.expiry_date || ''}</div></div>`;
+                        document.getElementById('scanned-product').innerHTML = html;
+                        let cart = JSON.parse(localStorage.getItem('cart') || '[]');
+                        let existing = cart.find(i => i.id == p.id);
+                        if (existing) existing.quantity += 1;
+                        else cart.push({ id: p.id, name: p.name, price: priceDisplay, quantity: 1 });
+                        localStorage.setItem('cart', JSON.stringify(cart));
+                        alert('تمت إضافة المنتج إلى السلة');
+                    } else {
+                        document.getElementById('scanned-product').innerHTML = `<p style="color:red;">المنتج غير موجود</p>`;
+                    }
+                });
+            }
+
+            document.getElementById('barcode-input').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') searchByBarcode();
+            });
+
+            loadProducts();
+        </script>
+    </body>
+    </html>
+    """, company_name=company_name, company_logo=company_logo)
+
+@app.route('/products')
+def products_page():
+    settings = get_settings()
+    company_name = settings['company_name']
+    return render_template_string("""
+    <!DOCTYPE html><html dir="rtl"><head><title>الأدوية</title>
+    <style>
+        :root {
+            --bg: #000;
+            --text: #FFD700;
+            --card-bg: #111;
+            --border: #FFD700;
+            --btn-bg: #FFD700;
+            --btn-text: #000;
+        }
+        body.light {
+            --bg: #f5f5f5;
+            --text: #000;
+            --card-bg: #fff;
+            --border: #007bff;
+            --btn-bg: #007bff;
+            --btn-text: #fff;
+        }
+        body{background:var(--bg);color:var(--text);padding:20px;font-family:Arial;transition:background 0.3s,color 0.3s;}
+        .container{max-width:1200px;margin:auto;}
+        .header{background:var(--card-bg);border:1px solid var(--border);padding:20px;border-radius:10px;margin-bottom:20px;}
+        .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:15px;}
+        .card{background:var(--card-bg);border:1px solid var(--border);padding:15px;border-radius:10px;text-align:center;}
+        .card .price{color:var(--btn-bg);font-weight:bold;font-size:18px;}
+        .btn{background:var(--btn-bg);color:var(--btn-text);padding:8px 15px;border:none;border-radius:5px;cursor:pointer;}
+        .theme-toggle{position:fixed;top:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
+        .chat-float{position:fixed;bottom:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);width:60px;height:60px;border-radius:50%;font-size:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:999;box-shadow:0 4px 15px rgba(0,0,0,0.5);text-decoration:none;}
+    </style>
+    </head>
+    <body>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
+    <div class="container">
+        <div class="header">
+            <h2>💊 جميع الأدوية والمستلزمات الطبية</h2>
+            <a href="/">الرئيسية</a>
+        </div>
+        <div id="productsList" class="grid"></div>
+    </div>
+    <script>
+        function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+        if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+
+        fetch('/api/products?limit=100')
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    let html = '';
+                    data.products.forEach(p => {
+                        html += `
+                            <div class="card">
+                                <h4>${p.name}</h4>
+                                <div class="price">${p.price} ريال</div>
+                                <div style="font-size:12px;color:#aaa;">${p.category || ''}</div>
+                                <div style="font-size:12px;">الكمية: ${p.quantity}</div>
+                                <button class="btn" onclick="addToCart(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.price})">أضف للسلة</button>
+                            </div>
+                        `;
+                    });
+                    document.getElementById('productsList').innerHTML = html;
+                }
+            });
+
+        function addToCart(id, name, price) {
+            let cart = JSON.parse(localStorage.getItem('cart') || '[]');
+            let existing = cart.find(i => i.id == id);
+            if (existing) existing.quantity += 1;
+            else cart.push({ id, name, price, quantity: 1 });
+            localStorage.setItem('cart', JSON.stringify(cart));
+            alert(`تمت إضافة ${name} إلى السلة`);
+        }
+    </script>
+    </body>
+    </html>
+    """, company_name=company_name)
+
+@app.route('/offers')
+def offers_page():
+    return render_template_string("""
+    <!DOCTYPE html><html dir="rtl"><head><title>العروض</title>
+    <style>body{background:#000;color:#FFD700;font-family:Arial;padding:20px;} .container{max-width:800px;margin:auto;} .offer{background:#111;border:1px solid #FFD700;padding:15px;border-radius:10px;margin:10px 0;}</style>
+    </head><body>
+    <div class="container"><h2>🎁 العروض الخاصة</h2>
+    <div id="offersList"></div>
+    <a href="/">الرئيسية</a>
+    </div>
+    <script>
+        fetch('/api/offers')
+            .then(r => r.json())
+            .then(data => {
+                let html = '';
+                data.offers.forEach(o => {
+                    html += `<div class="offer"><h3>${o.title}</h3><p>${o.description || ''}</p><p>خصم: ${o.discount_value}%</p></div>`;
+                });
+                document.getElementById('offersList').innerHTML = html || '<p>لا توجد عروض حالياً</p>';
+            });
+    </script>
+    </body></html>
+    """)
+
+@app.route('/points')
+def points_page():
+    return render_template_string("""
+    <!DOCTYPE html><html dir="rtl"><head><title>نقاطي</title>
+    <style>body{background:#000;color:#FFD700;font-family:Arial;padding:20px;}</style>
+    </head><body>
+    <h2>⭐ نقاط الولاء</h2>
+    <p>ادخل رقم هاتفك لعرض نقاطك:</p>
+    <input type="tel" id="phone" placeholder="رقم الهاتف" style="padding:10px;background:#111;color:#FFD700;border:1px solid #FFD700;border-radius:5px;width:200px;">
+    <button onclick="checkPoints()" style="background:#FFD700;color:#000;padding:10px;border:none;border-radius:5px;">عرض</button>
+    <div id="result" style="margin-top:20px;"></div>
+    <a href="/">الرئيسية</a>
+    <script>
+        function checkPoints() {
+            let phone = document.getElementById('phone').value.trim();
+            if (!phone) return;
+            fetch(`/api/customer/${phone}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('result').innerHTML = `
+                            <div style="background:#111;padding:15px;border-radius:10px;border:1px solid #FFD700;">
+                                <h3>${data.name}</h3>
+                                <p>⭐ نقاط الولاء: ${data.loyalty_points}</p>
+                                <p>💰 إجمالي المشتريات: ${data.total_spent}</p>
+                                <p>🏷️ التصنيف: ${data.tier}</p>
+                            </div>
+                        `;
+                    } else {
+                        document.getElementById('result').innerHTML = '<p style="color:red;">العميل غير موجود</p>';
+                    }
+                });
+        }
+    </script>
+    </body></html>
+    """)
+
+@app.route('/cart')
+def cart_page():
+    return render_template_string("""
+    <!DOCTYPE html><html dir="rtl"><head><title>السلة</title>
+    <style>
+        :root {
+            --bg: #000;
+            --text: #FFD700;
+            --card-bg: #111;
+            --border: #FFD700;
+            --btn-bg: #FFD700;
+            --btn-text: #000;
+        }
+        body.light {
+            --bg: #f5f5f5;
+            --text: #000;
+            --card-bg: #fff;
+            --border: #007bff;
+            --btn-bg: #007bff;
+            --btn-text: #fff;
+        }
+        body{background:var(--bg);color:var(--text);padding:20px;font-family:Arial;transition:background 0.3s,color 0.3s;}
+        .container{max-width:800px;margin:auto;}
+        .header{background:var(--card-bg);border:1px solid var(--border);padding:20px;border-radius:10px;margin-bottom:20px;}
+        .cart-item{background:var(--card-bg);border:1px solid var(--border);padding:10px;border-radius:8px;margin:5px 0;display:flex;justify-content:space-between;align-items:center;}
+        .btn{background:var(--btn-bg);color:var(--btn-text);padding:8px 15px;border:none;border-radius:5px;cursor:pointer;}
+        .theme-toggle{position:fixed;top:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
+        .chat-float{position:fixed;bottom:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);width:60px;height:60px;border-radius:50%;font-size:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:999;box-shadow:0 4px 15px rgba(0,0,0,0.5);text-decoration:none;}
+    </style>
+    </head>
+    <body>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
+    <div class="container">
+        <div class="header"><h2>🛒 سلة المشتريات</h2><a href="/">الرئيسية</a></div>
+        <div id="cartList"></div>
+        <div style="margin-top:20px;padding:15px;background:var(--card-bg);border:1px solid var(--border);border-radius:10px;">
+            <p><strong>الإجمالي:</strong> <span id="total">0</span> ريال</p>
+            <button class="btn" onclick="checkout()" style="width:100%;">✅ إنهاء الطلب</button>
+            <button class="btn" onclick="clearCart()" style="width:100%;margin-top:5px;background:#f44336;color:#fff;">🗑️ تفريغ</button>
+        </div>
+    </div>
+    <script>
+        function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+        if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+
+        function renderCart() {
+            let cart = JSON.parse(localStorage.getItem('cart') || '[]');
+            let html = '';
+            let total = 0;
+            if (cart.length === 0) {
+                html = '<p>السلة فارغة</p>';
+            } else {
+                cart.forEach((item, idx) => {
+                    let t = item.price * item.quantity;
+                    total += t;
+                    html += `
+                        <div class="cart-item">
+                            <span>${item.name} x${item.quantity}</span>
+                            <span>${t} ريال</span>
+                            <button onclick="removeItem(${idx})" style="background:#f44336;color:#fff;border:none;border-radius:3px;padding:2px 8px;">✕</button>
+                        </div>
+                    `;
+                });
+            }
+            document.getElementById('cartList').innerHTML = html;
+            document.getElementById('total').innerText = total;
+        }
+
+        function removeItem(idx) {
+            let cart = JSON.parse(localStorage.getItem('cart') || '[]');
+            cart.splice(idx, 1);
+            localStorage.setItem('cart', JSON.stringify(cart));
+            renderCart();
+        }
+
+        function clearCart() {
+            localStorage.removeItem('cart');
+            renderCart();
+        }
+
+        function checkout() {
+            let cart = JSON.parse(localStorage.getItem('cart') || '[]');
+            if (cart.length === 0) { alert('السلة فارغة'); return; }
+            
+            // التحقق من الشذوذ
+            fetch('/api/check-anomaly', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({cart: cart, total: cart.reduce((s,i) => s + i.price * i.quantity, 0)})
+            })
+            .then(r => r.json())
+            .then(anomaly => {
+                if (anomaly.is_anomaly) {
+                    if (!confirm(`⚠️ تحذير: تم اكتشاف شذوذ في هذه الفاتورة!\nالسبب: ${anomaly.reason}\nهل تريد المتابعة؟`)) {
+                        return;
+                    }
+                }
+                // إنشاء الفاتورة
+                fetch('/api/create_invoice', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({cart: cart, customer_name: 'عميل', payment_method: 'cash'})
+                })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        alert(`✅ تم إنشاء الفاتورة رقم ${data.invoice_number}`);
+                        localStorage.removeItem('cart');
+                        renderCart();
+                    } else {
+                        alert('❌ خطأ: ' + data.message);
+                    }
+                });
+            });
+        }
+
+        renderCart();
+    </script>
+    </body></html>
+    """)
+
+@app.route('/chat')
+def chat_page():
     return render_template_string("""
     <!DOCTYPE html>
     <html dir="rtl">
     <head>
         <meta charset="UTF-8">
-        <title>التسعير الديناميكي</title>
+        <title>المساعد الذكي</title>
         <style>
             :root {
                 --bg: #000;
@@ -1968,8 +2864,6 @@ def dynamic_pricing_page():
                 --border: #FFD700;
                 --btn-bg: #FFD700;
                 --btn-text: #000;
-                --input-bg: #000;
-                --input-text: #FFD700;
             }
             body.light {
                 --bg: #f5f5f5;
@@ -1978,282 +2872,157 @@ def dynamic_pricing_page():
                 --border: #007bff;
                 --btn-bg: #007bff;
                 --btn-text: #fff;
-                --input-bg: #fff;
-                --input-text: #000;
             }
             body{background:var(--bg);color:var(--text);padding:20px;font-family:Arial;transition:background 0.3s,color 0.3s;}
-            .container{max-width:1200px;margin:auto;}
+            .container{max-width:800px;margin:auto;}
             .header{background:var(--card-bg);border:1px solid var(--border);padding:20px;border-radius:10px;margin-bottom:20px;}
-            .nav a{color:var(--text);text-decoration:none;margin-left:15px;}
-            table{width:100%;border-collapse:collapse;background:var(--card-bg);border:1px solid var(--border);}
-            th,td{padding:10px;border:1px solid var(--border);text-align:center;}
-            th{background:var(--border);color:var(--btn-text);}
-            .btn{background:var(--btn-bg);color:var(--btn-text);padding:8px 15px;border:none;border-radius:5px;cursor:pointer;}
-            .price-up{color:#4CAF50;}
-            .price-down{color:#f44336;}
+            .chat-box{background:var(--card-bg);border:1px solid var(--border);border-radius:10px;height:400px;overflow-y:auto;padding:15px;margin-bottom:15px;}
+            .message{margin:10px 0;padding:10px;border-radius:8px;max-width:80%;}
+            .user{background:#1a1a2e;margin-right:auto;text-align:right;border:1px solid #FFD700;}
+            .assistant{background:#1a1a2e;margin-left:auto;text-align:left;border:1px solid #4CAF50;}
+            .input-area{display:flex;gap:10px;}
+            .input-area input{flex:1;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:5px;}
+            .btn{background:var(--btn-bg);color:var(--btn-text);padding:10px 20px;border:none;border-radius:5px;cursor:pointer;}
             .theme-toggle{position:fixed;top:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
-            .chat-float{position:fixed;bottom:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);width:60px;height:60px;border-radius:50%;font-size:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:999;box-shadow:0 4px 15px rgba(0,0,0,0.5);text-decoration:none;}
+            .model-badge{font-size:12px;padding:2px 8px;border-radius:10px;background:#4CAF50;color:#fff;margin-left:10px;}
+            .typing{color:#aaa;font-style:italic;}
         </style>
     </head>
     <body>
-    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
-    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
-    <div class="container">
-        <div class="header">
-            <h2>📊 التسعير الديناميكي الذكي</h2>
-            <div class="nav">
-                <a href="/admin">لوحة المدير</a>
-                <a href="/products">المنتجات</a>
-                <a href="/admin/dynamic-pricing" style="font-weight:bold;">التسعير الديناميكي</a>
-                <a href="/admin/ai-chat">🤖 المساعد الذكي</a>
+        <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+        <div class="container">
+            <div class="header">
+                <h2>💬 المساعد الذكي</h2>
+                <p style="font-size:14px;color:#aaa;">مدعوم بـ ChatGPT + RAG</p>
+                <div>
+                    <span class="model-badge">ChatGPT</span>
+                    <span class="model-badge" style="background:#FF9800;">RAG</span>
+                </div>
+                <a href="/">الرئيسية</a>
             </div>
-            <p style="margin-top:10px;font-size:14px;">يتم حساب السعر الأمثل تلقائياً بناءً على الطلب والمخزون وتاريخ الصلاحية والفئة</p>
-            <button class="btn" onclick="updateAllPrices()">🔄 تحديث جميع الأسعار</button>
+            <div class="chat-box" id="chatBox">
+                <div class="message assistant">👋 مرحباً! أنا مساعدك الصيدلاني الذكي. اسألني عن أي دواء أو استفسار طبي.</div>
+            </div>
+            <div class="input-area">
+                <input type="text" id="messageInput" placeholder="اكتب رسالتك هنا..." onkeypress="if(event.key==='Enter') sendMessage()">
+                <button class="btn" onclick="sendMessage()">إرسال</button>
+            </div>
+            <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;">
+                <button class="btn" onclick="quickQuestion('ما هو أفضل دواء مسكن؟')" style="font-size:12px;">💊 مسكنات</button>
+                <button class="btn" onclick="quickQuestion('ما هي المضادات الحيوية المتوفرة؟')" style="font-size:12px;">🦠 مضادات حيوية</button>
+                <button class="btn" onclick="quickQuestion('نصائح لتخزين الأدوية')" style="font-size:12px;">📦 تخزين</button>
+            </div>
         </div>
-        <div id="result"></div>
-        <table>
-            <thead>
-                <tr>
-                    <th>#</th>
-                    <th>المنتج</th>
-                    <th>السعر الحالي</th>
-                    <th>السعر الديناميكي</th>
-                    <th>سرعة المبيعات</th>
-                    <th>المخزون</th>
-                    <th>التصنيف</th>
-                    <th>آخر تحديث</th>
-                    <th>إجراء</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for p in products %}
-                <tr>
-                    <td>{{ p.id }}</td>
-                    <td>{{ p.name }}</td>
-                    <td>{{ p.price }} ريال</td>
-                    <td class="{% if p.dynamic_price and p.dynamic_price > p.price %}price-up{% elif p.dynamic_price and p.dynamic_price < p.price %}price-down{% endif %}">
-                        {{ p.dynamic_price or p.price }} ريال
-                    </td>
-                    <td>{{ "%.1f"|format(p.sales_velocity or 0) }}</td>
-                    <td>{{ p.quantity }}</td>
-                    <td>{{ p.abc_class or '-' }}</td>
-                    <td>{{ p.price_updated_at or 'لم يحدث' }}</td>
-                    <td>
-                        <button class="btn" onclick="updatePrice({{ p.id }})">تحديث</button>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-    <script>
-        function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
-        if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+        <script>
+            function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+            if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
 
-        function updatePrice(id) {
-            fetch(`/api/dynamic-price/${id}`)
+            function sendMessage() {
+                const input = document.getElementById('messageInput');
+                const msg = input.value.trim();
+                if (!msg) return;
+                addMessage('user', msg);
+                input.value = '';
+                addMessage('assistant', '⏳ جاري التفكير...', true);
+                fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({message: msg})
+                })
                 .then(r => r.json())
                 .then(data => {
+                    removeTyping();
                     if (data.success) {
-                        document.getElementById('result').innerHTML = `<p style="color:green;">✅ تم تحديث السعر إلى ${data.price} ريال</p>`;
-                        setTimeout(() => location.reload(), 1000);
+                        let reply = data.reply;
+                        if (data.model) reply += `\n\n🤖 (${data.model})`;
+                        addMessage('assistant', reply);
+                    } else {
+                        addMessage('assistant', '❌ عذراً، حدث خطأ: ' + (data.error || 'غير معروف'));
                     }
+                })
+                .catch(err => {
+                    removeTyping();
+                    addMessage('assistant', '❌ خطأ في الاتصال: ' + err);
                 });
-        }
+            }
 
-        function updateAllPrices() {
-            if (!confirm('تحديث جميع الأسعار قد يستغرق بعض الوقت. هل تريد المتابعة؟')) return;
-            document.getElementById('result').innerHTML = '<p>⏳ جاري تحديث الأسعار...</p>';
-            fetch('/api/update-all-prices', {method: 'POST'})
-                .then(r => r.json())
-                .then(data => {
-                    document.getElementById('result').innerHTML = `<p style="color:green;">✅ ${data.message}</p>`;
-                    setTimeout(() => location.reload(), 1500);
-                });
-        }
-    </script>
+            function quickQuestion(q) {
+                document.getElementById('messageInput').value = q;
+                sendMessage();
+            }
+
+            function addMessage(role, text, isTyping = false) {
+                const chatBox = document.getElementById('chatBox');
+                const div = document.createElement('div');
+                div.className = `message ${role}`;
+                if (isTyping) { div.className += ' typing'; div.id = 'typingMessage'; }
+                div.textContent = text;
+                chatBox.appendChild(div);
+                chatBox.scrollTop = chatBox.scrollHeight;
+            }
+
+            function removeTyping() {
+                const typing = document.getElementById('typingMessage');
+                if (typing) typing.remove();
+            }
+
+            document.getElementById('messageInput').focus();
+        </script>
     </body>
     </html>
-    """, products=products)
-
-@app.route('/api/update-all-prices', methods=['POST'])
-@admin_required
-def update_all_prices():
-    products = execute_query("SELECT id FROM products WHERE is_active = 1", fetch_all=True)
-    count = 0
-    for p in products:
-        calculate_dynamic_price(p['id'])
-        count += 1
-    return jsonify({'success': True, 'message': f'تم تحديث {count} منتج'})
-
-def update_sales_velocity():
-    products = execute_query("SELECT DISTINCT product_id FROM invoice_items", fetch_all=True)
-    for p in products:
-        pid = p['product_id']
-        items = execute_query("""
-            SELECT ii.quantity, i.created_at
-            FROM invoice_items ii
-            JOIN invoices i ON ii.invoice_id = i.id
-            WHERE ii.product_id = ? AND i.created_at >= datetime('now', '-30 days')
-        """, (pid,), fetch_all=True)
-        if items:
-            total_qty = sum(item['quantity'] for item in items)
-            velocity = total_qty / 30.0
-        else:
-            velocity = 0.1
-        execute_query("UPDATE products SET sales_velocity = ? WHERE id = ?", (velocity, pid), commit=True)
-
-# =============================== باقي الصفحات الإدارية ===============================
-@app.route('/admin/anomalies')
-@admin_required
-def anomalies_page():
-    anomalies = execute_query("""
-        SELECT i.*, u.username as created_by_name
-        FROM invoices i
-        LEFT JOIN users u ON i.created_by = u.id
-        WHERE i.is_anomaly = 1
-        ORDER BY i.created_at DESC
-    """, fetch_all=True)
-
-    anomaly_logs = execute_query("""
-        SELECT al.*, i.invoice_number, i.customer_name
-        FROM anomaly_logs al
-        JOIN invoices i ON al.invoice_id = i.id
-        ORDER BY al.created_at DESC LIMIT 50
-    """, fetch_all=True)
-
-    return render_template_string("""...""", anomalies=anomalies, anomaly_logs=anomaly_logs)
-
-@app.route('/api/mark-anomaly-reviewed/<int:invoice_id>', methods=['POST'])
-@admin_required
-def mark_anomaly_reviewed(invoice_id):
-    execute_query("UPDATE invoices SET is_anomaly = 0 WHERE id = ?", (invoice_id,), commit=True)
-    execute_query("UPDATE anomaly_logs SET is_reviewed = 1, reviewed_by = ? WHERE invoice_id = ?",
-                  (session.get('user_id', 1), invoice_id), commit=True)
-    return jsonify({'success': True})
-
-@app.route('/admin/scan-image-ui')
-@login_required
-def scan_image_ui():
-    return render_template_string("""...""")
-
-@app.route('/admin/scan-invoice')
-@login_required
-def scan_invoice_ui():
-    suppliers = execute_query("SELECT id, name FROM suppliers", fetch_all=True)
-    return render_template_string("""...""", suppliers=suppliers)
-
-@app.route('/admin/feedback')
-@admin_required
-def feedback_page():
-    feedbacks = execute_query("""
-        SELECT * FROM feedback ORDER BY created_at DESC LIMIT 100
-    """, fetch_all=True)
-
-    stats = execute_query("""
-        SELECT
-            COUNT(*) as total,
-            AVG(rating) as avg_rating,
-            SUM(CASE WHEN sentiment_label = 'إيجابي' THEN 1 ELSE 0 END) as positive,
-            SUM(CASE WHEN sentiment_label = 'سلبي' THEN 1 ELSE 0 END) as negative,
-            SUM(CASE WHEN sentiment_label = 'محايد' THEN 1 ELSE 0 END) as neutral
-        FROM feedback
-    """, fetch_one=True)
-
-    return render_template_string("""...""", stats=stats, feedbacks=feedbacks)
-
-@app.route('/admin/analytics')
-@admin_required
-def analytics_page():
-    stats = execute_query("""
-        SELECT
-            (SELECT COUNT(*) FROM products WHERE is_active = 1) as total_products,
-            (SELECT COUNT(*) FROM customers) as total_customers,
-            (SELECT COUNT(*) FROM invoices WHERE DATE(created_at) = DATE('now')) as today_sales,
-            (SELECT IFNULL(SUM(final_total), 0) FROM invoices WHERE DATE(created_at) = DATE('now')) as today_revenue,
-            (SELECT IFNULL(SUM(final_total), 0) FROM invoices WHERE created_at >= DATE('now', '-30 days')) as month_revenue
-    """, fetch_one=True)
-
-    top_products = execute_query("""
-        SELECT p.name, SUM(ii.quantity) as total_sold, SUM(ii.total) as revenue
-        FROM invoice_items ii
-        JOIN products p ON ii.product_id = p.id
-        GROUP BY ii.product_id
-        ORDER BY total_sold DESC
-        LIMIT 10
-    """, fetch_all=True)
-
-    category_sales = execute_query("""
-        SELECT p.category, SUM(ii.total) as revenue
-        FROM invoice_items ii
-        JOIN products p ON ii.product_id = p.id
-        WHERE p.category IS NOT NULL AND p.category != ''
-        GROUP BY p.category
-        ORDER BY revenue DESC
-    """, fetch_all=True)
-
-    daily_sales = execute_query("""
-        SELECT DATE(created_at) as day, IFNULL(SUM(final_total), 0) as total
-        FROM invoices
-        WHERE created_at >= DATE('now', '-7 days')
-        GROUP BY DATE(created_at)
-        ORDER BY day
-    """, fetch_all=True)
-
-    return render_template_string("""...""", stats=stats, top_products=top_products, category_sales=category_sales, daily_sales=daily_sales)
-
-# =============================== الصفحات الرئيسية (من الكود الأصلي) ===============================
-@app.route('/')
-def home():
-    settings = get_settings()
-    company_name = settings['company_name']
-    company_logo = settings['company_logo']
-    return render_template_string("""...""", company_name=company_name, company_logo=company_logo)
-
-@app.route('/products')
-def products_page():
-    return render_template_string("""...""")
-
-@app.route('/offers')
-def offers_page():
-    return render_template_string("""...""")
-
-@app.route('/points')
-def points_page():
-    return render_template_string("""...""")
-
-@app.route('/cart')
-def cart_page():
-    return render_template_string("""...""")
-
-@app.route('/chat')
-def chat_page():
-    return render_template_string("""...""")
+    """)
 
 @app.route('/payment')
 def payment_page():
-    return render_template_string("""...""")
+    return render_template_string("""
+    <!DOCTYPE html><html dir="rtl"><head><title>السداد</title>
+    <style>body{background:#000;color:#FFD700;font-family:Arial;padding:20px;}</style>
+    </head><body>
+    <div style="max-width:600px;margin:auto;background:#111;padding:30px;border-radius:10px;border:1px solid #FFD700;">
+        <h2>💳 السداد الإلكتروني</h2>
+        <p>طريقة الدفع: <strong>نقدي / تحويل بنكي</strong></p>
+        <p>رقم الحساب: <strong>123456789</strong></p>
+        <p>البنك: <strong>البنك المركزي اليمني</strong></p>
+        <a href="/cart">العودة للسلة</a>
+    </div>
+    </body></html>
+    """)
 
-@app.route('/customer/recommendations')
-def customer_recommendations_page():
-    return render_template_string("""...""")
+# =============================== تسجيل الدخول والخروج ===============================
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        user = execute_query("SELECT id, username, password_hash, role FROM users WHERE username = ?", (username,), fetch_one=True)
+        if user and check_password_hash(user['password_hash'], password):
+            session['user_id'] = user['id']
+            session['username'] = user['username']
+            session['role'] = user['role']
+            if user['role'] == 'admin':
+                return redirect(url_for('admin_dashboard'))
+            elif user['role'] == 'cashier':
+                return redirect(url_for('pos'))
+            elif user['role'] == 'pharmacist':
+                return redirect(url_for('pharmacist_dashboard'))
+            else:
+                return redirect(url_for('stock_dashboard'))
+        else:
+            return render_template_string("<h2 style='color:red;text-align:center;'>بيانات دخول خاطئة</h2><a href='/login'>حاول مرة أخرى</a>")
+    return render_template_string("""
+    <!DOCTYPE html><html dir="rtl"><head><title>تسجيل الدخول</title>
+    <style>body{background:#000;color:#FFD700;font-family:Arial;padding:50px;}.login{max-width:400px;margin:auto;background:#111;padding:30px;border-radius:10px;border:1px solid #FFD700;}</style>
+    </head><body><div class="login"><h2>🔐 تسجيل الدخول</h2>
+    <p style="font-size:12px;color:#aaa;">admin / admin123 | pharmacist / pharma123 | cashier / cashier123</p>
+    <form method="post"><input type="text" name="username" placeholder="اسم المستخدم" required style="width:100%;padding:10px;margin:10px 0;background:#000;color:#FFD700;border:1px solid #FFD700;border-radius:5px;"><input type="password" name="password" placeholder="كلمة المرور" required style="width:100%;padding:10px;margin:10px 0;background:#000;color:#FFD700;border:1px solid #FFD700;border-radius:5px;"><button type="submit" style="background:#FFD700;color:#000;padding:10px;width:100%;border:none;border-radius:5px;font-weight:bold;">دخول</button></form></div></body>
+    """)
 
-@app.route('/pos')
-@login_required
-def pos():
-    return render_template_string("""...""")
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('home'))
 
-@app.route('/pharmacist')
-@pharmacist_required
-def pharmacist_dashboard():
-    return render_template_string("""...""")
-
-@app.route('/stock')
-@store_keeper_required
-def stock_dashboard():
-    return render_template_string("""...""")
-
-# =============================== باقي المسارات الإدارية ===============================
+# =============================== لوحة المدير الرئيسية ===============================
 @app.route('/admin')
 @login_required
 def admin_dashboard():
@@ -2343,8 +3112,6 @@ def admin_dashboard():
         <a href="/admin/ai-chat" class="card" style="border-color:#4CAF50;"><span class="icon">🤖</span><span class="title">المساعد الذكي ChatGPT</span></a>
         <a href="/admin/dynamic-pricing" class="card"><span class="icon">💰</span><span class="title">التسعير الديناميكي</span></a>
         <a href="/admin/anomalies" class="card"><span class="icon">🛡️</span><span class="title">كشف الشذوذ <span class="badge">{{ anomalies_count }}</span></span></a>
-        <a href="/admin/scan-image-ui" class="card"><span class="icon">📷</span><span class="title">التعرف من الصور</span></a>
-        <a href="/admin/scan-invoice" class="card"><span class="icon">📄</span><span class="title">استخراج الفواتير</span></a>
         <a href="/admin/feedback" class="card"><span class="icon">💬</span><span class="title">تحليل المشاعر <span class="badge">{{ feedback_count }}</span></span></a>
         <a href="/admin/analytics" class="card"><span class="icon">📈</span><span class="title">التحليل الذكي</span></a>
         <a href="/customer/recommendations" class="card"><span class="icon">🎯</span><span class="title">توصيات العملاء</span></a>
@@ -2365,37 +3132,203 @@ def admin_dashboard():
     </html>
     """, low_stock_count=low_stock_count, anomalies_count=anomalies_count, feedback_count=feedback_count)
 
-# =============================== تسجيل الدخول والخروج ===============================
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        user = execute_query("SELECT id, username, password_hash, role FROM users WHERE username = ?", (username,), fetch_one=True)
-        if user and check_password_hash(user['password_hash'], password):
-            session['user_id'] = user['id']
-            session['username'] = user['username']
-            session['role'] = user['role']
-            if user['role'] == 'admin':
-                return redirect(url_for('admin_dashboard'))
-            elif user['role'] == 'cashier':
-                return redirect(url_for('pos'))
-            elif user['role'] == 'pharmacist':
-                return redirect(url_for('pharmacist_dashboard'))
-            else:
-                return redirect(url_for('stock_dashboard'))
-        else:
-            return render_template_string("<h2 style='color:red;text-align:center;'>بيانات دخول خاطئة</h2><a href='/login'>حاول مرة أخرى</a>")
+# =============================== نقطة البيع (POS) ===============================
+@app.route('/pos')
+@login_required
+def pos():
     return render_template_string("""
-    <!DOCTYPE html><html dir="rtl"><head><title>تسجيل الدخول</title>
-    <style>body{background:#000;color:#FFD700;font-family:Arial;padding:50px;}.login{max-width:400px;margin:auto;background:#111;padding:30px;border-radius:10px;border:1px solid #FFD700;}</style>
-    </head><body><div class="login"><h2>تسجيل الدخول</h2><form method="post"><input type="text" name="username" placeholder="اسم المستخدم" required style="width:100%;padding:10px;margin:10px 0;background:#000;color:#FFD700;border:1px solid #FFD700;"><input type="password" name="password" placeholder="كلمة المرور" required style="width:100%;padding:10px;margin:10px 0;background:#000;color:#FFD700;border:1px solid #FFD700;"><button type="submit" style="background:#FFD700;color:#000;padding:10px;width:100%;border:none;">دخول</button></form></div></body>
+    <!DOCTYPE html><html dir="rtl"><head><title>نقطة البيع</title>
+    <style>
+        :root {
+            --bg: #000;
+            --text: #FFD700;
+            --card-bg: #111;
+            --border: #FFD700;
+            --btn-bg: #FFD700;
+            --btn-text: #000;
+        }
+        body.light {
+            --bg: #f5f5f5;
+            --text: #000;
+            --card-bg: #fff;
+            --border: #007bff;
+            --btn-bg: #007bff;
+            --btn-text: #fff;
+        }
+        body{background:var(--bg);color:var(--text);padding:20px;font-family:Arial;transition:background 0.3s,color 0.3s;}
+        .container{max-width:1200px;margin:auto;}
+        .header{background:var(--card-bg);border:1px solid var(--border);padding:20px;border-radius:10px;margin-bottom:20px;}
+        .pos-grid{display:grid;grid-template-columns:2fr 1fr;gap:20px;}
+        .products-list{max-height:500px;overflow-y:auto;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;}
+        .product-item{background:var(--card-bg);border:1px solid var(--border);padding:10px;border-radius:8px;text-align:center;cursor:pointer;transition:0.2s;}
+        .product-item:hover{background:#222;transform:scale(1.02);}
+        .cart-item{background:var(--card-bg);border:1px solid var(--border);padding:8px;border-radius:5px;margin:5px 0;display:flex;justify-content:space-between;align-items:center;}
+        .btn{background:var(--btn-bg);color:var(--btn-text);padding:8px 15px;border:none;border-radius:5px;cursor:pointer;}
+        .theme-toggle{position:fixed;top:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);border:none;border-radius:50%;width:50px;height:50px;font-size:20px;cursor:pointer;z-index:1000;}
+        .chat-float{position:fixed;bottom:20px;left:20px;background:var(--btn-bg);color:var(--btn-text);width:60px;height:60px;border-radius:50%;font-size:30px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:999;box-shadow:0 4px 15px rgba(0,0,0,0.5);text-decoration:none;}
+        .barcode-input{display:flex;gap:10px;margin-bottom:15px;}
+        .barcode-input input{flex:1;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:5px;}
+    </style>
+    </head>
+    <body>
+    <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+    <a href="/chat" class="chat-float" title="المساعد الذكي">💬</a>
+    <div class="container">
+        <div class="header">
+            <h2>🛒 نقطة البيع</h2>
+            <a href="/">الرئيسية</a> | <a href="/admin">لوحة المدير</a>
+        </div>
+        <div class="barcode-input">
+            <input type="text" id="barcodeInput" placeholder="ادخل الباركود..." onkeypress="if(event.key==='Enter') scanBarcode()">
+            <button class="btn" onclick="scanBarcode()">🔍 بحث</button>
+        </div>
+        <div class="pos-grid">
+            <div><h4>📦 المنتجات</h4><div id="productsList" class="products-list"></div></div>
+            <div><h4>🛒 السلة</h4><div id="cartList"></div>
+                <div style="margin-top:15px;padding:10px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;">
+                    <p><strong>الإجمالي:</strong> <span id="cartTotal">0</span> ريال</p>
+                    <button class="btn" onclick="checkout()" style="width:100%;">✅ إنهاء الطلب</button>
+                    <button class="btn" onclick="clearCart()" style="width:100%;margin-top:5px;background:#f44336;color:#fff;">🗑️ تفريغ</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        let cart = [];
+        function toggleTheme(){document.body.classList.toggle('light');localStorage.setItem('theme',document.body.classList.contains('light')?'light':'dark');}
+        if(localStorage.getItem('theme')==='light') document.body.classList.add('light');
+
+        function loadProducts() {
+            fetch('/api/products?limit=30')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        let html = '';
+                        data.products.forEach(p => {
+                            html += `<div class="product-item" onclick="addProduct(${p.id}, '${p.name.replace(/'/g, "\\'")}', ${p.price})">
+                                <div style="font-size:12px;">${p.name}</div>
+                                <div style="color:var(--btn-bg);font-weight:bold;">${p.price} ريال</div>
+                                <div style="font-size:10px;color:#aaa;">${p.quantity} متبقي</div>
+                            </div>`;
+                        });
+                        document.getElementById('productsList').innerHTML = html;
+                    }
+                });
+        }
+
+        function addProduct(id, name, price) {
+            let existing = cart.find(i => i.id === id);
+            if (existing) existing.quantity += 1;
+            else cart.push({ id, name, price, quantity: 1 });
+            renderCart();
+        }
+
+        function renderCart() {
+            let html = ''; let total = 0;
+            cart.forEach((item, idx) => {
+                let t = item.price * item.quantity; total += t;
+                html += `<div class="cart-item"><span>${item.name} x${item.quantity}</span><span>${t} ريال</span>
+                    <button onclick="removeItem(${idx})" style="background:#f44336;color:#fff;border:none;border-radius:3px;padding:2px 8px;">✕</button></div>`;
+            });
+            document.getElementById('cartList').innerHTML = html || '<p>السلة فارغة</p>';
+            document.getElementById('cartTotal').innerText = total;
+        }
+
+        function removeItem(idx) { cart.splice(idx, 1); renderCart(); }
+        function clearCart() { cart = []; renderCart(); }
+
+        function scanBarcode() {
+            let barcode = document.getElementById('barcodeInput').value.trim();
+            if (!barcode) return;
+            fetch('/api/scan-barcode', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({barcode})})
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) { let p = data.product; addProduct(p.id, p.name, p.price); document.getElementById('barcodeInput').value = ''; }
+                    else alert('المنتج غير موجود');
+                });
+        }
+
+        function checkout() {
+            if (cart.length === 0) { alert('السلة فارغة'); return; }
+            fetch('/api/check-anomaly', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cart: cart, total: cart.reduce((s,i) => s + i.price * i.quantity, 0)})})
+                .then(r => r.json())
+                .then(anomaly => {
+                    if (anomaly.is_anomaly && !confirm(`⚠️ تحذير: تم اكتشاف شذوذ!\nالسبب: ${anomaly.reason}\nهل تريد المتابعة؟`)) return;
+                    fetch('/api/create_invoice', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cart: cart, customer_name: 'عميل', payment_method: 'cash'})})
+                        .then(r => r.json())
+                        .then(data => {
+                            if (data.success) { alert(`✅ تم إنشاء الفاتورة رقم ${data.invoice_number}`); cart = []; renderCart(); }
+                            else alert('❌ خطأ: ' + data.message);
+                        });
+                });
+        }
+
+        loadProducts();
+    </script>
+    </body>
+    </html>
     """)
 
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect(url_for('home'))
+# =============================== باقي المسارات الإدارية ===============================
+@app.route('/pharmacist')
+@pharmacist_required
+def pharmacist_dashboard():
+    return render_template_string("<h2>👨‍⚕️ لوحة الصيدلي</h2><a href='/'>الرئيسية</a>")
+
+@app.route('/stock')
+@store_keeper_required
+def stock_dashboard():
+    return render_template_string("<h2>📦 لوحة أمين المخزن</h2><a href='/'>الرئيسية</a>")
+
+@app.route('/admin/settings')
+@admin_required
+def admin_settings():
+    return render_template_string("<h2>⚙️ الإعدادات</h2><p>قيد التطوير...</p><a href='/admin'>العودة</a>")
+
+@app.route('/admin/products')
+@admin_required
+def admin_products():
+    return render_template_string("<h2>📦 إدارة المنتجات</h2><p>قيد التطوير...</p><a href='/admin'>العودة</a>")
+
+@app.route('/admin/suppliers')
+@admin_required
+def admin_suppliers():
+    return render_template_string("<h2>🏭 إدارة الموردين</h2><p>قيد التطوير...</p><a href='/admin'>العودة</a>")
+
+@app.route('/admin/purchases')
+@admin_required
+def admin_purchases():
+    return render_template_string("<h2>📥 إدارة المشتريات</h2><p>قيد التطوير...</p><a href='/admin'>العودة</a>")
+
+@app.route('/admin/offers')
+@admin_required
+def admin_offers():
+    return render_template_string("<h2>🎁 إدارة العروض</h2><p>قيد التطوير...</p><a href='/admin'>العودة</a>")
+
+@app.route('/admin/customers')
+@admin_required
+def admin_customers():
+    return render_template_string("<h2>👥 إدارة العملاء</h2><p>قيد التطوير...</p><a href='/admin'>العودة</a>")
+
+@app.route('/admin/invoices')
+@admin_required
+def admin_invoices():
+    return render_template_string("<h2>📄 إدارة الفواتير</h2><p>قيد التطوير...</p><a href='/admin'>العودة</a>")
+
+@app.route('/admin/reports')
+@admin_required
+def admin_reports():
+    return render_template_string("<h2>📊 التقارير</h2><p>قيد التطوير...</p><a href='/admin'>العودة</a>")
+
+@app.route('/admin/users')
+@admin_required
+def admin_users():
+    return render_template_string("<h2>👤 إدارة المستخدمين</h2><p>قيد التطوير...</p><a href='/admin'>العودة</a>")
+
+@app.route('/admin/returns')
+@admin_required
+def admin_returns():
+    return render_template_string("<h2>🔄 إدارة المرتجعات</h2><p>قيد التطوير...</p><a href='/admin'>العودة</a>")
 
 # =============================== API إضافية ===============================
 @app.route('/api/products')
@@ -2524,8 +3457,7 @@ def export_report(report_type):
             SELECT i.invoice_number, i.customer_name, i.final_total, i.payment_method, i.created_at,
                    (SELECT COUNT(*) FROM invoice_items WHERE invoice_id = i.id) as items_count,
                    i.is_anomaly
-            FROM invoices i
-            ORDER BY i.created_at DESC
+            FROM invoices i            ORDER BY i.created_at DESC
             LIMIT 100
         """, fetch_all=True)
         title = 'تقرير المبيعات (آخر 100 فاتورة)'
@@ -2597,73 +3529,6 @@ def export_report(report_type):
     else:
         return 'صيغة غير مدعومة', 400
 
-# =============================== الصفحات الإدارية (قيد التطوير) ===============================
-@app.route('/admin/settings')
-@admin_required
-def admin_settings():
-    return render_template_string("""
-    <!DOCTYPE html><html dir="rtl"><head><title>الإعدادات</title>
-    <style>body{background:#000;color:#FFD700;padding:20px;font-family:Arial;}</style>
-    </head><body>
-    <h2>⚙️ الإعدادات</h2>
-    <p>قيد التطوير...</p>
-    <a href="/admin">العودة للوحة</a>
-    </body></html>
-    """)
-
-@app.route('/admin/products')
-@admin_required
-def admin_products():
-    return render_template_string("""
-    <!DOCTYPE html><html dir="rtl"><head><title>المنتجات</title>
-    <style>body{background:#000;color:#FFD700;padding:20px;font-family:Arial;}</style>
-    </head><body>
-    <h2>📦 إدارة المنتجات</h2>
-    <p>قيد التطوير...</p>
-    <a href="/admin">العودة للوحة</a>
-    </body></html>
-    """)
-
-@app.route('/admin/suppliers')
-@admin_required
-def admin_suppliers():
-    return render_template_string("""...""")
-
-@app.route('/admin/purchases')
-@admin_required
-def admin_purchases():
-    return render_template_string("""...""")
-
-@app.route('/admin/offers')
-@admin_required
-def admin_offers():
-    return render_template_string("""...""")
-
-@app.route('/admin/customers')
-@admin_required
-def admin_customers():
-    return render_template_string("""...""")
-
-@app.route('/admin/invoices')
-@admin_required
-def admin_invoices():
-    return render_template_string("""...""")
-
-@app.route('/admin/reports')
-@admin_required
-def admin_reports():
-    return render_template_string("""...""")
-
-@app.route('/admin/users')
-@admin_required
-def admin_users():
-    return render_template_string("""...""")
-
-@app.route('/admin/returns')
-@admin_required
-def admin_returns():
-    return render_template_string("""...""")
-
 # =============================== تشغيل التطبيق ===============================
 if __name__ == '__main__':
     print("="*70)
@@ -2674,11 +3539,8 @@ if __name__ == '__main__':
     print("   🤖 مساعد ذكي متقدم (ChatGPT + RAG)")
     print("   💰 التسعير الديناميكي (Dynamic Pricing)")
     print("   🛡️ كشف الشذوذ والاحتيال (Anomaly Detection)")
-    print("   👁️ تحليل الصور (GPT-4 Vision)")
-    print("   📷 التعرف على الأدوية من الصور (OCR + CV)")
     print("   🎯 توصيات مخصصة للعملاء")
     print("   💬 تحليل المشاعر من التقييمات")
-    print("   📄 استخراج بيانات الفواتير الورقية")
     print("   📊 لوحات تحليل ذكية")
     print("="*70)
     print("🔐 بيانات الدخول:")
@@ -2690,14 +3552,13 @@ if __name__ == '__main__':
     print("="*70)
     print("🌐 الروابط الرئيسية:")
     print("   👉 http://localhost:5000/                (الرئيسية)")
-    print("   👉 http://localhost:5000/admin           (لوحة المدير - جميع الميزات)")
+    print("   👉 http://localhost:5000/admin           (لوحة المدير)")
     print("   👉 http://localhost:5000/admin/ai-chat   (المساعد الذكي ChatGPT)")
     print("   👉 http://localhost:5000/admin/dynamic-pricing (التسعير الديناميكي)")
     print("   👉 http://localhost:5000/admin/anomalies (كشف الشذوذ)")
-    print("   👉 http://localhost:5000/admin/scan-image-ui (التعرف من الصور)")
-    print("   👉 http://localhost:5000/admin/scan-invoice (استخراج الفواتير)")
     print("   👉 http://localhost:5000/admin/feedback  (تحليل المشاعر)")
     print("   👉 http://localhost:5000/admin/analytics (التحليل الذكي)")
     print("="*70)
     print("✅ تم التحميل بنجاح! افتح الرابط في المتصفح.")
-    app.run(host='127.0.0.1', port=5000, debug=True, threaded=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
