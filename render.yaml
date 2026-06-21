@@ -1,26 +1,23 @@
 services:
   - type: web
-    name: bashaer-pharmacy
+    name: bashair-pharmacy
     runtime: python
-    plan: free
-    buildCommand: |
-      pip install -r requirements.txt
-      apt-get update && apt-get install -y tesseract-ocr tesseract-ocr-ara
-    startCommand: gunicorn app:app
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
+      - key: OPENAI_API_KEY
+        sync: false
       - key: SECRET_KEY
         generateValue: true
       - key: DATABASE_URL
         fromDatabase:
-          name: bashaer-db
+          name: bashair-db
           property: connectionString
-      - key: GEMINI_API_KEY
-        sync: false
-      - key: OPENAI_API_KEY
-        sync: false
+    buildFilter:
+      paths:
+        - app.py
+        - requirements.txt
 
 databases:
-  - name: bashaer-db
-    plan: free
+  - name: bashair-db
+    plan: starter
