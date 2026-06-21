@@ -9,12 +9,11 @@ numpy==1.24.3
 scikit-learn==1.3.1
 gunicorn==21.2.0
 qrcode==7.4.2
-
 Flask
 psycopg2-binary
 openpyxl
 reportlab
-requests
+requests 
 python-dotenv
 openai
 numpy
